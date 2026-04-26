@@ -95,13 +95,13 @@ func NewIndexer(cfg Config) (*Indexer, error) {
 
 // Report 汇总一次索引运行的结果。
 type Report struct {
-	FilesScanned   int      // 目录遍历发现的支持文件总数
-	FilesSkipped   int      // mtime+hash 命中被跳过的
-	FilesIndexed   int      // 真正解析入库的
-	FilesFailed    int      // 解析失败的
-	FilesRemoved   int      // 在磁盘上不存在了、从 store 中清除的
-	ChunksTotal    int      // 入库后的 chunk 总数(所有文件加总)
-	Errors         []error  // 按顺序汇总的错误(单文件失败不阻断)
+	FilesScanned int     // 目录遍历发现的支持文件总数
+	FilesSkipped int     // mtime+hash 命中被跳过的
+	FilesIndexed int     // 真正解析入库的
+	FilesFailed  int     // 解析失败的
+	FilesRemoved int     // 在磁盘上不存在了、从 store 中清除的
+	ChunksTotal  int     // 入库后的 chunk 总数(所有文件加总)
+	Errors       []error // 按顺序汇总的错误(单文件失败不阻断)
 }
 
 func (r *Report) addErr(err error) {
@@ -116,11 +116,11 @@ func (ix *Indexer) Run(ctx context.Context) (*Report, error) {
 	rep := &Report{}
 
 	// 1. 扫描目录,得到所有候选文件(绝对路径)
-	goFiles, tsFiles, err := ix.scan(ctx)
+	goFiles, tsFiles, mdFiles, err := ix.scan(ctx)
 	if err != nil {
 		return rep, fmt.Errorf("index: scan: %w", err)
 	}
-	rep.FilesScanned = len(goFiles) + len(tsFiles)
+	rep.FilesScanned = len(goFiles) + len(tsFiles) + len(mdFiles)
 
 	// 2. 增量判定:对每个候选文件,决定是"跳过"、"解析"还是"跳过但更新 mtime"
 	//    为了让 hash 检查只读一次,我们在过滤阶段就把 body + hash 缓存下来
@@ -132,13 +132,18 @@ func (ix *Indexer) Run(ctx context.Context) (*Report, error) {
 	if err != nil {
 		return rep, err
 	}
+	mdTasks, err := ix.filterIncremental(ctx, mdFiles, &rep.FilesSkipped)
+	if err != nil {
+		return rep, err
+	}
 
 	// 3. 分两路并行解析:Go 走 per-file 协程池,TS 走单次批量
 	var wg sync.WaitGroup
 
 	var goResults []*parseResult
 	var tsResults []*parseResult
-	var goMu, tsMu sync.Mutex
+	var mdResults []*parseResult
+	var goMu, tsMu, mdMu sync.Mutex
 
 	if len(goTasks) > 0 {
 		wg.Add(1)
@@ -160,10 +165,23 @@ func (ix *Indexer) Run(ctx context.Context) (*Report, error) {
 			tsMu.Unlock()
 		}()
 	}
+	if len(mdTasks) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res := ix.parseMarkdownFiles(ctx, mdTasks)
+			mdMu.Lock()
+			mdResults = res
+			mdMu.Unlock()
+		}()
+	}
 	wg.Wait()
 
 	// 4. 入库(串行,避免 store 内部锁开销)
-	for _, r := range append(goResults, tsResults...) {
+
+	all := append(goResults, tsResults...)
+	all = append(all, mdResults...)
+	for _, r := range all {
 		if r.err != nil {
 			rep.FilesFailed++
 			rep.addErr(fmt.Errorf("parse %s: %w", r.task.relPath, r.err))
@@ -181,7 +199,7 @@ func (ix *Indexer) Run(ctx context.Context) (*Report, error) {
 	}
 
 	// 5. 删除检测:从 store 中清除在磁盘上已不存在的文件
-	removed, err := ix.pruneDeleted(goFiles, tsFiles)
+	removed, err := ix.pruneDeleted(goFiles, tsFiles, mdFiles)
 	if err != nil {
 		rep.addErr(err)
 	}
@@ -201,7 +219,7 @@ func (ix *Indexer) log(event, path string, extra map[string]any) {
 }
 
 // scan 遍历 ProjectRoot,返回所有支持文件的绝对路径,分 Go 和 TS 两组。
-func (ix *Indexer) scan(ctx context.Context) (goFiles, tsFiles []string, err error) {
+func (ix *Indexer) scan(ctx context.Context) (goFiles, tsFiles, mdFiles []string, err error) {
 	walkErr := filepath.WalkDir(ix.cfg.ProjectRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			// 单个条目读失败不中断整个扫描;记一笔继续
@@ -237,10 +255,12 @@ func (ix *Indexer) scan(ctx context.Context) (goFiles, tsFiles []string, err err
 		case ".js":
 			// .js 也由 TS sidecar 处理(Bun 兼容 JS)
 			tsFiles = append(tsFiles, path)
+		case ".md", ".markdown":
+			mdFiles = append(mdFiles, path)
 		}
 		return nil
 	})
-	return goFiles, tsFiles, walkErr
+	return goFiles, tsFiles, mdFiles, walkErr
 }
 
 // parseTask 是一个"已确认需要解析"的文件,携带它的 hash 和 mtime。
@@ -411,14 +431,19 @@ func (ix *Indexer) parseTSFiles(ctx context.Context, tasks []*parseTask) []*pars
 
 // pruneDeleted 删除 store 中存在、但磁盘上已不见的文件条目。
 // 参数是本次扫描到的磁盘上文件的绝对路径集合(Go + TS 合并)。
-func (ix *Indexer) pruneDeleted(goFiles, tsFiles []string) (int, error) {
-	onDisk := make(map[string]struct{}, len(goFiles)+len(tsFiles))
+func (ix *Indexer) pruneDeleted(goFiles, tsFiles, mdFiles []string) (int, error) {
+	onDisk := make(map[string]struct{}, len(goFiles)+len(tsFiles)+len(mdFiles))
 	for _, abs := range goFiles {
 		if rel, err := relPath(ix.cfg.ProjectRoot, abs); err == nil {
 			onDisk[rel] = struct{}{}
 		}
 	}
 	for _, abs := range tsFiles {
+		if rel, err := relPath(ix.cfg.ProjectRoot, abs); err == nil {
+			onDisk[rel] = struct{}{}
+		}
+	}
+	for _, abs := range mdFiles {
 		if rel, err := relPath(ix.cfg.ProjectRoot, abs); err == nil {
 			onDisk[rel] = struct{}{}
 		}
@@ -439,6 +464,24 @@ func (ix *Indexer) pruneDeleted(goFiles, tsFiles []string) (int, error) {
 		}
 	}
 	return removed, firstErr
+}
+
+// parseMarkdownFiles 顺序解析 markdown 文件。
+// 不并行:markdown parser 是纯 CPU + 小文件,启动 goroutine 池得不偿失。
+// 如果将来发现是瓶颈,改成 GoConcurrency 池即可。
+func (ix *Indexer) parseMarkdownFiles(ctx context.Context, tasks []*parseTask) []*parseResult {
+	results := make([]*parseResult, len(tasks))
+	for i, t := range tasks {
+		if err := ctx.Err(); err != nil {
+			for j := i; j < len(tasks); j++ {
+				results[j] = &parseResult{task: tasks[j], err: err}
+			}
+			break
+		}
+		chunks, err := chunk.ParseMarkdownFile(t.absPath, t.relPath)
+		results[i] = &parseResult{task: t, chunks: chunks, err: err}
+	}
+	return results
 }
 
 // relPath 把绝对路径转成相对项目根的 POSIX 风格路径。

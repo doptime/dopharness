@@ -65,6 +65,7 @@ func New(cfg Config) (*Harness, error) {
 	ap := edit.NewApplier(cfg.ProjectRoot, st, validator)
 	ap.GoParse = chunk.ParseGoFile
 	ap.TSParse = tsParser.ParseTSFile
+	ap.MdParse = chunk.ParseMarkdownFile
 
 	// gateway(只有在 caller 具备时才拉起;否则留 nil,Run/BuildContext 报错)
 	var gw *gateway.Gateway

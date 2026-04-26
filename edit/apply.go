@@ -108,6 +108,9 @@ type Applier struct {
 	// TSParse 是批量解析 TS 文件的函数。注入。可以为 nil(则 TS 文件修改不会更新索引)。
 	TSParse func(absPath, relPath string) ([]*chunk.Chunk, error)
 
+	// MdParse 是解析 markdown 文件的函数。注入。可以为 nil(则 .md 文件修改不会更新索引)。
+	MdParse func(absPath, relPath string) ([]*chunk.Chunk, error)
+
 	// fileLocks 给每个文件一把独立的锁,防止两个并发修改同一个文件相互覆盖。
 	fileLocksMu sync.Mutex
 	fileLocks   map[string]*sync.Mutex
@@ -373,7 +376,7 @@ func (a *Applier) applyCreateFile(mod *Modification, res *ApplyResult) *ApplyRes
 	rel := normalizeRelPath(mod.FilePath)
 	if !isSupportedExtension(rel) {
 		res.Outcome = OutcomeConflict
-		res.Message = fmt.Sprintf("unsupported extension for %s (supported: .go .ts .tsx .js .jsx)", rel)
+		res.Message = fmt.Sprintf("unsupported extension for %s (supported: .go .ts .tsx .js .jsx .md .markdown)", rel)
 		return res
 	}
 	absPath := a.absPath(rel)
@@ -518,6 +521,11 @@ func (a *Applier) reindexFile(rel, absPath string) error {
 			return errors.New("TSParse not configured")
 		}
 		chunks, err = a.TSParse(absPath, rel)
+	case ".md", ".markdown":
+		if a.MdParse == nil {
+			return errors.New("MdParse not configured")
+		}
+		chunks, err = a.MdParse(absPath, rel)
 	default:
 		return fmt.Errorf("unsupported extension %s", ext)
 	}
@@ -661,7 +669,7 @@ func normalizeRelPath(p string) string {
 // isSupportedExtension 判断文件名是否是我们支持的语言。
 func isSupportedExtension(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".go", ".ts", ".tsx", ".js", ".jsx":
+	case ".go", ".ts", ".tsx", ".js", ".jsx", ".md", ".markdown":
 		return true
 	}
 	return false

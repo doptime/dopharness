@@ -14,13 +14,14 @@
 
 dopharness 通过三步把这两件事都处理了:
 
-1. **AST 切片**:源码按函数/类型切成 chunk,每个 chunk 有稳定的 4 字符 ID
+1. **AST 切片**:Go/TS/JS 按函数/类型切,markdown 按节(H<level>)切,每个 chunk 有
+   稳定的 4 字符 ID
 2. **三态上下文网关**:请求前先让便宜的小模型判断每个 chunk 应该
    - `FULL` 原文完整展示(将要被修改的)
    - `SKELETON` 只给签名(可能被引用的)
    - `IGNORE` 完全不出现(无关的,只报总数)
 3. **外科修改**:LLM 只能通过 ToolCall 发 `modify_chunk(id, new_content)`,
-   服务端做两级语法校验,失败回滚
+   服务端做语法校验(代码)或结构性放行(markdown),失败回滚
 
 ## 安装
 
@@ -33,6 +34,8 @@ TypeScript/JavaScript 支持需要 [Bun](https://bun.sh):
 ```bash
 curl -fsSL https://bun.sh/install | bash
 ```
+
+Go 和 markdown 文件无外部依赖,纯 Go 实现。
 
 ## 快速开始
 
@@ -86,7 +89,7 @@ func main() {
 
 对每个 chunk,通过 TriageDecision 工具提交你的判断。
 - 如果 chunk 就是要被修改的,标 FULL
-- 如果 chunk 被将要修改的代码引用(参数类型、调用关系),标 SKELETON
+- 如果 chunk 被将要修改的代码引用(参数类型、调用关系、文档章节互引),标 SKELETON
 - 其余标 IGNORE
 `))
 
@@ -138,7 +141,7 @@ func main() {
         log.Fatal(err)
     }
 
-    // 5. 索引
+    // 5. 索引(Go/TS/JS/Markdown 一并扫描)
     if _, err := h.Index(context.Background()); err != nil {
         log.Fatal(err)
     }
@@ -146,7 +149,9 @@ func main() {
     // 6. 注册工具(Run 之前必须做)
     h.AsLLMTools(toolBuilder)
 
-    // 7. 跑!
+    // 7. 跑!可以是代码任务,也可以是文档任务,工具集相同。
+    //    比如:"给 extractGoFunc 加 context.Context 参数"、
+    //         "把 README 的 Quick Start 一节改写成更适合新手的版本"。
     report, err := h.Run(context.Background(), "给 extractGoFunc 函数加上 context.Context 参数")
     if err != nil {
         log.Fatal(err)
@@ -170,7 +175,7 @@ func main() {
 
 ```
 dopharness/
-├── chunk/     AST 切片:chunk.go + parser_go.go + parser_ts.go + sidecar.ts
+├── chunk/     AST 切片:chunk.go + parser_go.go + parser_ts.go + parser_md.go + sidecar.ts
 ├── store/     chunk 持久化:JSONStore(默认)+ ChunkStore 接口
 ├── index/     目录扫描 + 增量解析调度
 ├── edit/      修改回写:Modification、Applier、两级语法校验、文件锁
@@ -179,6 +184,17 @@ dopharness/
 ├── tools/     5+2 个 llm.Tool 封装:modify_chunk / create_file / ... / read_chunk
 └── harness/   顶层门面:New / Index / BuildContext / Run / AsLLMTools
 ```
+
+## 支持的文件类型
+
+| 扩展名 | Parser | 切片粒度 | 语法校验 |
+|---|---|---|---|
+| `.go` | 进程内 `go/parser` | 顶层声明(func/type/var/const) | 两级:snippet + merged |
+| `.ts` `.tsx` `.js` `.jsx` | Bun sidecar(批量) | 顶层声明 + 类内方法 | 两级:snippet + merged |
+| `.md` `.markdown` | 进程内确定性 parser | ATX 标题节(默认 H2,可调) | 不校验(markdown 无语法) |
+
+markdown 切片粒度通过 `chunk.MarkdownChunkLevel` 全局调整,默认 2(按 H2 切),
+范围 1-6。frontmatter (`---...---`) 独立成 chunk,标题前的散文成为 preamble chunk。
 
 ## 记忆目录约定
 
@@ -194,23 +210,32 @@ memory/
 └── sessions/      # L4:历史会话摘要,由 memory.SessionRecordsLayer.Append 写入
 ```
 
+注意:这些 `.md` 文件本身**不**会被 indexer 当成项目 chunk 处理 ——
+`.dopharness/` 整个目录在扫描时被忽略(见 indexer 的 `IgnoreDirs`),记忆层
+有自己的渲染逻辑。项目源码树里的其他 `.md`(README、设计文档、规格)才会
+作为普通 chunk 进入索引,LLM 可以通过 modify_chunk 编辑它们。
+
 ## 设计决策记录
 
 | 决策 | 选择 |
 |---|---|
-| Chunk ID 形式 | 3 字节随机 + base64url = 4 字符。与文件名/符号解耦,永不变 |
+| Chunk ID 形式 | 3 字节随机 + base64url = 4 字符。与文件名/符号/标题文本解耦,永不变 |
 | 增量索引判据 | mtime 一级过滤 + xxhash 二级过滤(对抗 `git checkout`) |
 | TS 分析方式 | Bun sidecar 子进程 + 批量模式(首次冷启动后一次解析所有文件) |
+| Markdown 分析方式 | 进程内确定性 parser(ATX 标题层级)。**不**用 LLM 拆分 —— LLM 拆分会让边界随机漂移,破坏 chunk ID 稳定性 |
 | 上下文判定 | 两 Pass LLM(无向量无图),Pass1 分片并发,Pass2 整批升级 |
-| 修改失败策略 | 两级语法校验 → 写盘 → reindex → 任一步失败字节级回滚 |
+| 修改失败策略 | 代码:两级语法校验 → 写盘 → reindex;markdown:跳过校验直接 reindex;任一步失败字节级回滚 |
 | Run 的重试 | 最多 3 轮;失败时把"上一轮工具摘要"追加到 user prompt |
 | 存储层 | 默认 JSON 文件(chunks.json + files.json);接口可替换 |
 
 ## 测试
 
 ```bash
-# Go 测试(不需要 Bun)
+# Go 测试(不需要 Bun;包括 Go parser、markdown parser、edit、gateway 等)
 go test ./chunk ./store ./index ./edit ./gateway ./memory ./tools ./harness -run '!TS'
+
+# 仅 markdown
+go test ./chunk -run Markdown
 
 # 全量(需要 Bun 或 DOPHARNESS_BUN=<shim>)
 DOPHARNESS_BUN=/path/to/bun go test ./...

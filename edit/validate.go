@@ -39,6 +39,8 @@ func (v *ValidationError) Error() string {
 }
 
 // Validator 提供 Go/TS 语法校验。TS 侧可以为 nil(没配 TSParser 时 TS 校验会短路放行)。
+//
+// markdown 不做语法校验:markdown 没有"语法错误"的概念,内容质量问题由评估器处理。
 type Validator struct {
 	// TSParser 如果非 nil,TS 校验会调用它的 Validate 方法。
 	// 为了避免循环依赖,这里用接口抽象。
@@ -77,6 +79,7 @@ func NewValidator(tsV TSValidator) *Validator {
 //   - snippet 通不过 → 直接 StageSnippet 错,LLM 只看它自己产出的片段就能定位
 //   - snippet 通过,但 merged 不过 → StageMerged 错,说明上下文(import/大括号匹配)有问题
 //   - 二者都通过 → nil
+//   - markdown:无语法概念,直接放行
 func (v *Validator) Validate(path string, snippet, merged string) *ValidationError {
 	lang := detectLanguage(path)
 	switch lang {
@@ -96,9 +99,15 @@ func (v *Validator) Validate(path string, snippet, merged string) *ValidationErr
 			return e
 		}
 		return v.validateTSCode(merged, kind, StageMerged)
+	case langMarkdown:
+		// markdown 没有"语法错误"这个概念。content 总是合法的(最坏情况是结构难看,
+		// 那是 LLM 内容质量问题,由评估器处理而非 validator)。显式 return nil 比走
+		// langUnknown 的 default 分支语义更明确——"我知道是 markdown,所以放行",
+		// 而不是"我不认识这个扩展名,所以不阻断"。
+		return nil
 	default:
-		// 未知语言:dopharness 只应该接到 Go/TS/JS/TSX/JSX 的修改请求。
-		// 保险起见不阻断,返回 nil。调用方应在 Apply 层拒绝未知扩展。
+		// 未知语言:dopharness 只应该接到 Go/TS/JS/TSX/JSX/MD 的修改请求。
+		// 保险起见不阻断,返回 nil。调用方应在 Apply 层(isSupportedExtension)拒绝未知扩展。
 		return nil
 	}
 }
@@ -109,6 +118,7 @@ const (
 	langUnknown language = iota
 	langGo
 	langTS
+	langMarkdown
 )
 
 func detectLanguage(path string) language {
@@ -117,6 +127,8 @@ func detectLanguage(path string) language {
 		return langGo
 	case ".ts", ".tsx", ".js", ".jsx":
 		return langTS
+	case ".md", ".markdown":
+		return langMarkdown
 	}
 	return langUnknown
 }

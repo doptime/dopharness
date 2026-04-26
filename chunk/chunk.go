@@ -25,6 +25,12 @@ const (
 	KindInterface Kind = "Interface"
 	KindClass     Kind = "Class" // TS/JS
 	KindType      Kind = "Type"  // 兜底:type alias 等
+
+	// Markdown chunk types(由 parser_md.go 产出)
+	KindSection     Kind = "Section"     // ATX 节级标题及其正文
+	KindFrontmatter Kind = "Frontmatter" // 文件首部 YAML/TOML 块
+	KindPreamble    Kind = "Preamble"    // 第一个标题之前的散文,或无标题文件全文
+
 )
 
 // Chunk 是 AST 切片的通用表达。无论来自 Go、TS、JS 都落到这个结构上。
