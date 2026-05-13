@@ -42,12 +42,9 @@ const (
 type Modification struct {
 	Action Action `json:"action"`
 
-	// ChunkID 目标 chunk 的稳定 ID。
-	// MODIFY/DELETE_CHUNK 时必须有 ChunkID 或 Name 之一。
+	// ChunkID 目标 chunk 的稳定 ID。MODIFY/DELETE_CHUNK 时必填。
+	// 不再支持 Name 兜底:LLM 必须用 prompt 里给出的 ChunkID 精确定位。
 	ChunkID string `json:"chunk_id,omitempty"`
-
-	// Name 是 LLM 可能写错 ID 时的兜底名称(如 "User.Save")。
-	Name string `json:"name,omitempty"`
 
 	// FilePath 是相对项目根的路径,用 POSIX 正斜杠。
 	// CREATE_FILE/DELETE_FILE/ADD_CHUNK 时必填。
@@ -65,7 +62,7 @@ const (
 	OutcomeApplied    ApplyOutcome = "applied"    // 成功应用,已落盘
 	OutcomeNoOp       ApplyOutcome = "noop"       // 幂等跳过(如 DELETE 一个不存在的文件)
 	OutcomeValidation ApplyOutcome = "validation" // 语法校验失败(文件未变更)
-	OutcomeLocation   ApplyOutcome = "location"   // 定位失败(LLM 说的 ID/Name 找不到或有歧义)
+	OutcomeLocation   ApplyOutcome = "location"   // 定位失败(ChunkID 不存在)
 	OutcomeConflict   ApplyOutcome = "conflict"   // 前置条件冲突(如 CREATE_FILE 但文件已存在)
 	OutcomeIOError    ApplyOutcome = "io_error"   // 磁盘读写失败
 )
@@ -74,8 +71,8 @@ const (
 type ApplyResult struct {
 	Modification *Modification // 原始请求,方便日志定位
 	Outcome      ApplyOutcome
-	Message      string      // 人类 / LLM 可读的详细说明
-	AffectedIDs  []string    // 受影响的 chunk ID(新建、复用、删除的都列出)
+	Message      string           // 人类 / LLM 可读的详细说明
+	AffectedIDs  []string         // 受影响的 chunk ID(新建、复用、删除的都列出)
 	Validation   *ValidationError // Outcome == OutcomeValidation 时非 nil
 }
 
@@ -89,15 +86,15 @@ func (r *ApplyResult) Error() error {
 }
 
 // Applier 是修改应用器。持有 store 和校验器,自带每文件锁防止并发写冲突。
+//
+// 定位 chunk 是直接走 Store.GetChunk(id) ——不再有 byName 模糊回退。
+// 如果 LLM 报错 ID,Apply 会以 OutcomeLocation 返回,并附上同文件的其它 chunk ID 提示。
 type Applier struct {
 	// ProjectRoot 是项目根绝对路径。所有 FilePath 基于它解析。
 	ProjectRoot string
 
 	// Store 是 chunk 存储。
 	Store store.ChunkStore
-
-	// Locator 用于 MODIFY/DELETE_CHUNK 定位 chunk。
-	Locator *Locator
 
 	// Validator 做两级语法校验。
 	Validator *Validator
@@ -121,7 +118,6 @@ func NewApplier(projectRoot string, s store.ChunkStore, v *Validator) *Applier {
 	return &Applier{
 		ProjectRoot: projectRoot,
 		Store:       s,
-		Locator:     NewLocator(s),
 		Validator:   v,
 		fileLocks:   map[string]*sync.Mutex{},
 	}
@@ -181,10 +177,25 @@ func (a *Applier) ApplyBatch(mods []*Modification) []*ApplyResult {
 
 // ---- 以下是各 Action 的具体实现 ----
 
+// locateByID 是 MODIFY/DELETE_CHUNK 的统一 chunk 定位:仅按 ChunkID 精确查。
+//
+// 失败时构造一个对 LLM 友好的错误信息——如果至少能猜出文件,会附上同文件其它
+// 候选 ID,帮助 LLM 自纠;否则返回简短的 not-found 提示。
+func (a *Applier) locateByID(id string) (*chunk.Chunk, string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, "chunk_id is required"
+	}
+	if c, ok := a.Store.GetChunk(id); ok {
+		return c, ""
+	}
+	return nil, fmt.Sprintf("chunk %q not found. Use a chunk_id that appears verbatim in <full_chunks>/<skeleton_chunks> of your context.", id)
+}
+
 // applyModify 替换一个已存在 chunk 的内容。
 //
 // 流程:
-//  1. Locator 定位目标 chunk
+//  1. 按 ChunkID 直接查 store
 //  2. 读取原文件(Body 外的上下文都要保留)
 //  3. 用 NewContent 替换 chunk 对应的字节区间
 //  4. 两级语法校验
@@ -196,18 +207,12 @@ func (a *Applier) applyModify(mod *Modification, res *ApplyResult) *ApplyResult 
 		res.Message = "MODIFY requires NewContent"
 		return res
 	}
-	loc := a.Locator.Locate(mod.ChunkID, mod.Name)
-	switch loc.Outcome {
-	case LocateMissing:
+	target, missMsg := a.locateByID(mod.ChunkID)
+	if target == nil {
 		res.Outcome = OutcomeLocation
-		res.Message = loc.Message
-		return res
-	case LocateAmbiguous:
-		res.Outcome = OutcomeLocation
-		res.Message = loc.Message
+		res.Message = missMsg
 		return res
 	}
-	target := loc.Chunk
 
 	// 文件级锁
 	unlock := a.acquire(target.FilePath)
@@ -254,26 +259,17 @@ func (a *Applier) applyModify(mod *Modification, res *ApplyResult) *ApplyResult 
 	res.Outcome = OutcomeApplied
 	res.Message = fmt.Sprintf("modified chunk %s in %s", target.ID, target.FilePath)
 	res.AffectedIDs = []string{target.ID}
-	if loc.Outcome == LocateFuzzyUnique {
-		res.Message += " (warning: " + loc.Message + ")"
-	}
 	return res
 }
 
 // applyDeleteChunk 从文件里移除一个 chunk(删字节,不影响其他 chunk)。
 func (a *Applier) applyDeleteChunk(mod *Modification, res *ApplyResult) *ApplyResult {
-	loc := a.Locator.Locate(mod.ChunkID, mod.Name)
-	switch loc.Outcome {
-	case LocateMissing:
+	target, missMsg := a.locateByID(mod.ChunkID)
+	if target == nil {
 		res.Outcome = OutcomeLocation
-		res.Message = loc.Message
-		return res
-	case LocateAmbiguous:
-		res.Outcome = OutcomeLocation
-		res.Message = loc.Message
+		res.Message = missMsg
 		return res
 	}
-	target := loc.Chunk
 	unlock := a.acquire(target.FilePath)
 	defer unlock()
 

@@ -1,3 +1,4 @@
+
 # dopharness
 
 一个 Go 语言的 **AST 级上下文网关**,让 LLM 在修改代码仓库时产生的幻觉最小化。
@@ -68,10 +69,6 @@ func main() {
         case func(*tools.CreateFilePayload):
             return llm.NewTool(name, desc, h)
         case func(*tools.DeleteFilePayload):
-            return llm.NewTool(name, desc, h)
-        case func(*tools.ReadChunkPayload):
-            return llm.NewTool(name, desc, h)
-        case func(*tools.SearchChunksByNamePayload):
             return llm.NewTool(name, desc, h)
         }
         panic(fmt.Sprintf("unknown handler type: %T", handler))
@@ -181,7 +178,7 @@ dopharness/
 ├── edit/      修改回写:Modification、Applier、两级语法校验、文件锁
 ├── gateway/   三态上下文网关:Pass1 并发分片 + Pass2 整批升级 + XML 渲染
 ├── memory/    GenericAgent 风格的 L0-L4 分层记忆
-├── tools/     5+2 个 llm.Tool 封装:modify_chunk / create_file / ... / read_chunk
+├── tools/     5 个 llm.Tool 封装:modify_chunk / delete_chunk / add_chunk / create_file / delete_file
 └── harness/   顶层门面:New / Index / BuildContext / Run / AsLLMTools
 ```
 
@@ -226,7 +223,10 @@ memory/
 | 上下文判定 | 两 Pass LLM(无向量无图),Pass1 分片并发,Pass2 整批升级 |
 | 修改失败策略 | 代码:两级语法校验 → 写盘 → reindex;markdown:跳过校验直接 reindex;任一步失败字节级回滚 |
 | Run 的重试 | 最多 3 轮;失败时把"上一轮工具摘要"追加到 user prompt |
-| 存储层 | 默认 JSON 文件(chunks.json + files.json);接口可替换 |
+| 存储层 | 默认 JSON 文件(单一 files.json,chunks 内嵌进 FileMeta);接口可替换 |
+| Chunk 字段精简 | 只保留 ID / FilePath / Kind / Name / Body / Refs / UpdatedAt。Skeleton/Defines/ContentHash 已删除(渲染时按需从 Body 抽签名;file 级 hash 在 FileMeta 上) |
+| 工具表 | 只剩 5 个修改类工具,无 read_chunk / search_chunks_by_name —— Renderer 已按文件把相关 chunk 全量/骨架写进 prompt,LLM 不需要单独查询 |
+| 上下文渲染 | 按**文件**分组,同文件 chunk 按源码顺序排列,三态(FULL/SKELETON/IGNORE)用 `[chunk xxxx FULL: ...]` 行内标记包裹 |
 
 ## 测试
 

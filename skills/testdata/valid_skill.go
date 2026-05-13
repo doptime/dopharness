@@ -14,11 +14,13 @@ const AddRouteSOP = `你正在执行"添加路由"任务。参数:
   Method: {{.Method}}
   Tags: {{.Tags}}
 
-按以下步骤完成:
-1. 用 search_chunks_by_name 找到 router 注册的 chunk
-2. 用 read_chunk 看现有的注册模式
-3. 用 add_chunk 添加 handler 函数
-4. 用 modify_chunk 注册新路由
+按以下步骤完成。注意:context 里 <file path="..."> 段内的
+[chunk xxxx FULL/SKELETON] 标记已经把项目中所有相关 chunk 列出来,
+直接挑相关 chunk_id 操作即可。
+
+1. 在 context 中定位 router 注册表 chunk(通常名字含 Router/Mux/Routes)
+2. 用 add_chunk 在 handlers 文件末尾添加 handler 函数
+3. 用 modify_chunk 把新路由注册到 router chunk
 
 完成后用一句话回报结果。`
 
@@ -32,11 +34,12 @@ const RefactorFunctionSOP = `你正在执行"函数改名"任务。参数:
   OldName: {{.OldName}}
   NewName: {{.NewName}}
 
-步骤:
-1. search_chunks_by_name {{.OldName}} 找到目标定义
-2. read_chunk 确认是函数声明
-3. modify_chunk 改函数名
-4. 用 search_chunks_by_name 找所有引用,逐一 modify_chunk 改调用名
+步骤(全部 chunk 都在 context 里 [chunk xxxx FULL/SKELETON] 标记中可见):
+
+1. 找到 {{.OldName}} 的定义,记下它的 chunk_id
+2. 扫描所有 Refs 包含 {{.OldName}} 的 chunk(即调用点)
+3. modify_chunk 改定义本身,把名字改成 {{.NewName}}
+4. 对每个调用点 modify_chunk 把调用改成 {{.NewName}}
 `
 
 // HelperUnused 是一个没有对应 SOP 常量的辅助类型,加载时应该被跳过。

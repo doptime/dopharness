@@ -1,3 +1,4 @@
+
 // sidecar.ts —— dopharness 的 TypeScript/JavaScript AST 分析器。
 //
 // 运行方式(由 Go 端调用):

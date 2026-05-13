@@ -65,11 +65,11 @@ type ExpandPromptParams struct {
 
 // SkeletonItem 是 Pass2 输入里的单项。
 type SkeletonItem struct {
-	ID       string
-	Kind     chunk.Kind
-	Name     string
-	FilePath string
-	Skeleton string // chunk.Chunk.Skeleton,完整签名
+	ID        string
+	Kind      chunk.Kind
+	Name      string
+	FilePath  string
+	Signature string // chunk Body 的首条非注释行(签名/类型声明行)
 }
 
 // ----------------------------------------------------------------
@@ -120,14 +120,14 @@ func NewSelector(cfg SelectorConfig) (*Selector, error) {
 
 // SelectReport 汇总一次 Select 运行的情况,便于调试和观测。
 type SelectReport struct {
-	TotalChunks    int
-	ShardsCount    int
-	TriageErrors   []error
-	ExpandErrored  bool
-	ExpandError    error
-	FullCount      int
-	SkeletonCount  int
-	IgnoreCount    int
+	TotalChunks     int
+	ShardsCount     int
+	TriageErrors    []error
+	ExpandErrored   bool
+	ExpandError     error
+	FullCount       int
+	SkeletonCount   int
+	IgnoreCount     int
 	MissingCoverage []string // Pass1 未覆盖的 chunk ID(LLM 遗漏);会被默认设为 IGNORE
 }
 
@@ -321,11 +321,11 @@ func collectSkeletonChunks(chunks []*chunk.Chunk, decisions DecisionMap) []*Skel
 	for _, c := range chunks {
 		if d, ok := decisions[c.ID]; ok && d.Mode == ModeSkeleton {
 			items = append(items, &SkeletonItem{
-				ID:       c.ID,
-				Kind:     c.Kind,
-				Name:     c.Name,
-				FilePath: c.FilePath,
-				Skeleton: c.Skeleton,
+				ID:        c.ID,
+				Kind:      c.Kind,
+				Name:      c.Name,
+				FilePath:  c.FilePath,
+				Signature: firstMeaningfulLine(c.Body),
 			})
 		}
 	}

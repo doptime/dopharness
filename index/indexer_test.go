@@ -14,13 +14,14 @@ import (
 )
 
 // setupProject 在临时目录里搭一个模拟项目:
-//   project/
-//     main.go          (2 个 chunk: Hello + User)
-//     util/helper.go   (1 个 chunk: Helper)
-//     frontend/app.ts  (2 个 chunk: render + App)
-//     node_modules/x.go  (应被忽略)
-//     .git/config      (应被忽略)
-//     README.md        (非源码,应被忽略)
+//
+//	project/
+//	  main.go          (2 个 chunk: Hello + User)
+//	  util/helper.go   (1 个 chunk: Helper)
+//	  frontend/app.ts  (2 个 chunk: render + App)
+//	  node_modules/x.go  (应被忽略)
+//	  .git/config      (应被忽略)
+//	  README.md        (非源码,应被忽略)
 func setupProject(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -284,7 +285,7 @@ func TestIndexer_DeletedFilePruned(t *testing.T) {
 	}
 }
 
-func TestIndexer_ContentHashFallbackWhenMtimeChanges(t *testing.T) {
+func TestIndexer_FileHashFallbackWhenMtimeChanges(t *testing.T) {
 	// 模拟 git checkout 场景:mtime 变了但内容没变,不应重新解析
 	skipIfNoTS(t)
 	root := setupProject(t)

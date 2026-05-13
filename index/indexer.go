@@ -1,3 +1,4 @@
+
 // Package index 是 dopharness 的索引构建层。
 //
 // 职责:

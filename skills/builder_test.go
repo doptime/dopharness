@@ -56,8 +56,8 @@ func TestAstTypeToReflect_Supported(t *testing.T) {
 // 不支持的形态都应明确拒绝。
 func TestAstTypeToReflect_Rejected(t *testing.T) {
 	cases := []struct {
-		expr        string
-		wantSubstr  string
+		expr       string
+		wantSubstr string
 	}{
 		{"time.Time", "限定类型不支持"},
 		{"context.Context", "限定类型不支持"},
@@ -65,7 +65,7 @@ func TestAstTypeToReflect_Rejected(t *testing.T) {
 		{"interface{ Read() error }", "非空 interface"},
 		{"chan int", "channel"},
 		{"func()", "函数类型"},
-		{"FooBar", "命名类型"},  // 既不是内置类型,又没有 selector
+		{"FooBar", "命名类型"}, // 既不是内置类型,又没有 selector
 	}
 	for _, tc := range cases {
 		t.Run(tc.expr, func(t *testing.T) {

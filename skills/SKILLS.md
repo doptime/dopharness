@@ -1,3 +1,4 @@
+
 # dopharness/skills
 
 dopharness 的 **flywheel skill** 体系。LLM 在做项目过程中会发现重复出现的"步骤套路"(比如"加一条路由"涉及四步固定的 chunk 操作)。skill 就是把这些套路固化成一段**纯数据**:参数 schema(struct)+ 步骤模板(SOP),不写任何 callback 代码。
@@ -22,11 +23,12 @@ const AddRouteSOP = `你正在执行"添加路由"任务。参数:
   Handler: {{.HandlerName}}
   Method: {{.Method}}
 
-按以下步骤完成:
-1. 用 search_chunks_by_name 找到 router 注册的 chunk
-2. 用 read_chunk 看现有的注册模式
-3. 用 add_chunk 添加 handler 函数
-4. 用 modify_chunk 注册新路由
+按以下步骤完成。context 里 <file path="..."> 段内的 [chunk xxxx FULL/SKELETON]
+标记已经把项目中所有相关 chunk 列出来了,直接挑相关的 chunk_id 操作即可。
+
+1. 在 context 中定位 router 注册表 chunk(通常名字含 Router/Mux/Routes)
+2. 用 add_chunk 在 handlers 文件末尾添加 handler 函数
+3. 用 modify_chunk 把新路由注册进 router chunk
 `
 ```
 

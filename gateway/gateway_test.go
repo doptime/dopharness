@@ -20,7 +20,6 @@ func mkChunk(id, name, path string, kind chunk.Kind, body string) *chunk.Chunk {
 		Name:     name,
 		FilePath: path,
 		Kind:     kind,
-		Skeleton: fmt.Sprintf("func %s() { /* ... */ }", name),
 		Body:     body,
 	}
 }
@@ -58,17 +57,6 @@ func (s *stubStore) AllChunks() []*chunk.Chunk {
 	out := make([]*chunk.Chunk, 0, len(s.chunks))
 	for _, c := range s.chunks {
 		out = append(out, c)
-	}
-	return out
-}
-func (s *stubStore) ChunksByName(name string) []*chunk.Chunk {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var out []*chunk.Chunk
-	for _, c := range s.chunks {
-		if c.Name == name {
-			out = append(out, c)
-		}
 	}
 	return out
 }
@@ -147,12 +135,12 @@ func TestSelect_BasicTriage(t *testing.T) {
 	// 场景:用户要改 Foo。Foo 调用了 Bar。应当 Foo=FULL, Bar=SKELETON, Baz=IGNORE
 	chunks := []*chunk.Chunk{
 		{ID: "aaaa", Name: "Foo", FilePath: "a.go", Kind: chunk.KindFunction,
-			Skeleton: "func Foo()", Body: "func Foo() { Bar() }",
+			Body: "func Foo() { Bar() }",
 			Refs: []string{"Bar"}},
 		{ID: "bbbb", Name: "Bar", FilePath: "a.go", Kind: chunk.KindFunction,
-			Skeleton: "func Bar()", Body: "func Bar() {}"},
+			Body: "func Bar() {}"},
 		{ID: "cccc", Name: "Baz", FilePath: "b.go", Kind: chunk.KindFunction,
-			Skeleton: "func Baz()", Body: "func Baz() {}"},
+			Body: "func Baz() {}"},
 	}
 
 	sel, err := NewSelector(SelectorConfig{
@@ -189,7 +177,7 @@ func TestSelect_SharingWhenMany(t *testing.T) {
 			Name:     fmt.Sprintf("Fn%d", i),
 			FilePath: "big.go",
 			Kind:     chunk.KindFunction,
-			Skeleton: "func ...",
+			Body:     "func placeholder()",
 		}
 	}
 	var shardsSeen int32
@@ -291,8 +279,8 @@ func TestSelect_ShardFailureIsolated(t *testing.T) {
 
 func TestSelect_ExpandUpgradesSkeletonToFull(t *testing.T) {
 	chunks := []*chunk.Chunk{
-		{ID: "aaaa", Name: "A", Skeleton: "func A()"},
-		{ID: "bbbb", Name: "B", Skeleton: "func B()"},
+		{ID: "aaaa", Name: "A", Body: "func A()"},
+		{ID: "bbbb", Name: "B", Body: "func B()"},
 	}
 	// Pass1:A=SKELETON, B=IGNORE
 	triage := func(params TriagePromptParams, sink func(*TriageDecisionPayload)) error {
@@ -378,14 +366,15 @@ func TestSelect_ExpandFailureDoesntBreakPass1(t *testing.T) {
 
 // --- Renderer 测试 ---
 
-func TestRenderer_ThreeSectionsEmitted(t *testing.T) {
-	chunks := []*chunk.Chunk{
-		{ID: "aaaa", Name: "A", FilePath: "a.go", Kind: chunk.KindFunction,
-			Skeleton: "func A() { /* ... */ }", Body: "func A() { do_a() }"},
-		{ID: "bbbb", Name: "B", FilePath: "b.go", Kind: chunk.KindFunction,
-			Skeleton: "func B() { /* ... */ }", Body: "func B() { do_b() }"},
-		{ID: "cccc", Name: "C", FilePath: "c.go", Kind: chunk.KindFunction,
-			Skeleton: "func C() { /* ... */ }", Body: "func C() { do_c() }"},
+func TestRenderer_FileShapedOutput(t *testing.T) {
+	// 三个文件,各一个 chunk,分别 FULL / SKELETON / IGNORE
+	byFile := map[string][]*chunk.Chunk{
+		"a.go": {{ID: "aaaa", Name: "A", FilePath: "a.go", Kind: chunk.KindFunction,
+			Body: "func A() { do_a() }"}},
+		"b.go": {{ID: "bbbb", Name: "B", FilePath: "b.go", Kind: chunk.KindFunction,
+			Body: "func B(x int) error { do_b() }"}},
+		"c.go": {{ID: "cccc", Name: "C", FilePath: "c.go", Kind: chunk.KindFunction,
+			Body: "func C() { do_c() }"}},
 	}
 	decisions := DecisionMap{
 		"aaaa": {ChunkID: "aaaa", Mode: ModeFull},
@@ -393,49 +382,70 @@ func TestRenderer_ThreeSectionsEmitted(t *testing.T) {
 		"cccc": {ChunkID: "cccc", Mode: ModeIgnore},
 	}
 	r := NewRenderer()
-	out := r.Render(chunks, decisions)
+	out := r.Render(byFile, decisions)
 
-	// 三段都有
-	for _, tag := range []string{"<ignored_chunks", "<skeleton_chunks", "<full_chunks"} {
-		if !strings.Contains(out, tag) {
-			t.Errorf("missing section %s:\n%s", tag, out)
+	// 顶层 <context> 出现且统计正确
+	if !strings.Contains(out, `<context files="3" full="1" skeleton="1" ignored="1">`) {
+		t.Errorf("context header wrong:\n%s", out)
+	}
+	// 每个文件都有 <file> 标记
+	for _, p := range []string{"a.go", "b.go", "c.go"} {
+		if !strings.Contains(out, `path="`+p+`"`) {
+			t.Errorf("file %s missing:\n%s", p, out)
 		}
 	}
-	// ignored 段只给计数
-	if !strings.Contains(out, `count="1"`) {
-		t.Errorf("ignored count wrong:\n%s", out)
-	}
-	// A 的完整 body 出现在 full 段
+	// A 的完整 body 出现
 	if !strings.Contains(out, "func A() { do_a() }") {
 		t.Errorf("A body missing:\n%s", out)
 	}
-	// B 的 skeleton 出现,但不应有 body
-	if !strings.Contains(out, "func B() { /* ... */ }") {
-		t.Errorf("B skeleton missing:\n%s", out)
+	// B 只有签名一行,函数体调用不出现
+	if !strings.Contains(out, "func B(x int) error") {
+		t.Errorf("B signature missing:\n%s", out)
 	}
 	if strings.Contains(out, "do_b()") {
 		t.Errorf("B body leaked into skeleton section:\n%s", out)
 	}
-	// C 的任何内容都不应出现(只计数)
+	// C 的 body 任何字节都不应出现
 	if strings.Contains(out, "do_c()") {
 		t.Errorf("ignored C body leaked:\n%s", out)
 	}
+	// IGNORE 标记可见
+	if !strings.Contains(out, "[chunk cccc IGNORED]") {
+		t.Errorf("IGNORED marker missing for C:\n%s", out)
+	}
 }
 
-func TestRenderer_EmptySections(t *testing.T) {
-	// 只有 full,没 skeleton 没 ignored
-	chunks := []*chunk.Chunk{
-		{ID: "aaaa", Name: "A", FilePath: "a.go", Body: "body"},
+func TestRenderer_SameFileChunksGroupedInOrder(t *testing.T) {
+	// 同文件多 chunk:按传入顺序(模拟源码顺序)渲染
+	byFile := map[string][]*chunk.Chunk{
+		"x.go": {
+			{ID: "first", Name: "First", FilePath: "x.go", Kind: chunk.KindFunction, Body: "func First() {}"},
+			{ID: "secd", Name: "Second", FilePath: "x.go", Kind: chunk.KindFunction, Body: "func Second() {}"},
+			{ID: "thrd", Name: "Third", FilePath: "x.go", Kind: chunk.KindFunction, Body: "func Third() {}"},
+		},
 	}
-	decisions := DecisionMap{"aaaa": {ChunkID: "aaaa", Mode: ModeFull}}
-	out := NewRenderer().Render(chunks, decisions)
+	decisions := DecisionMap{
+		"first": {ChunkID: "first", Mode: ModeFull},
+		"secd":  {ChunkID: "secd", Mode: ModeFull},
+		"thrd":  {ChunkID: "thrd", Mode: ModeFull},
+	}
+	out := NewRenderer().Render(byFile, decisions)
+	// 三个 chunk 标记按顺序出现
+	idxFirst := strings.Index(out, "[chunk first FULL")
+	idxSecond := strings.Index(out, "[chunk secd FULL")
+	idxThird := strings.Index(out, "[chunk thrd FULL")
+	if idxFirst < 0 || idxSecond < 0 || idxThird < 0 {
+		t.Fatalf("not all chunk markers found:\n%s", out)
+	}
+	if !(idxFirst < idxSecond && idxSecond < idxThird) {
+		t.Errorf("chunks rendered out of source order:\n%s", out)
+	}
+}
 
-	// 空段仍发出(count="0")
-	if !strings.Contains(out, `<skeleton_chunks count="0"`) {
-		t.Errorf("empty skeleton section not emitted:\n%s", out)
-	}
-	if !strings.Contains(out, `<ignored_chunks count="0"`) {
-		t.Errorf("empty ignored section not emitted:\n%s", out)
+func TestRenderer_EmptyInput(t *testing.T) {
+	out := NewRenderer().Render(map[string][]*chunk.Chunk{}, DecisionMap{})
+	if !strings.Contains(out, `<context files="0"`) {
+		t.Errorf("empty render should still emit context header:\n%s", out)
 	}
 }
 

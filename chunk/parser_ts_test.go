@@ -120,7 +120,7 @@ func TestTSParser_ParseSingleFile(t *testing.T) {
 	}
 }
 
-func TestTSParser_SkeletonPreservesGenerics(t *testing.T) {
+func TestTSParser_BodyPreservesGenerics(t *testing.T) {
 	skipIfNoRuntime(t)
 
 	p := NewTSParser()
@@ -130,7 +130,7 @@ func TestTSParser_SkeletonPreservesGenerics(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 
-	// UserService 的骨架必须保留泛型约束,不能被 indexOf('{') 坑到
+	// UserService 的 body 必须保留泛型约束和完整实现
 	var us *Chunk
 	for _, c := range chunks {
 		if c.Name == "UserService" {
@@ -141,15 +141,11 @@ func TestTSParser_SkeletonPreservesGenerics(t *testing.T) {
 	if us == nil {
 		t.Fatal("UserService not found")
 	}
-	if !strings.Contains(us.Skeleton, "UserService<T extends User>") {
-		t.Errorf("skeleton lost generic constraint:\n%s", us.Skeleton)
+	if !strings.Contains(us.Body, "UserService<T extends User>") {
+		t.Errorf("body lost generic constraint:\n%s", us.Body)
 	}
-	if !strings.Contains(us.Skeleton, "/* ... */") {
-		t.Errorf("skeleton missing body placeholder:\n%s", us.Skeleton)
-	}
-	// class 体内的 cache 字段不应在 skeleton 中
-	if strings.Contains(us.Skeleton, "private cache") {
-		t.Errorf("skeleton leaked class body:\n%s", us.Skeleton)
+	if !strings.Contains(us.Body, "private cache") {
+		t.Errorf("body should preserve class members:\n%s", us.Body)
 	}
 }
 
@@ -175,8 +171,8 @@ func TestTSParser_ArrowFunctionCaptured(t *testing.T) {
 	if h.Kind != KindFunction {
 		t.Errorf("handler: want Function kind, got %s", h.Kind)
 	}
-	if !strings.Contains(h.Skeleton, "async (req: Request)") {
-		t.Errorf("handler skeleton doesn't preserve signature:\n%s", h.Skeleton)
+	if !strings.Contains(h.Body, "async (req: Request)") {
+		t.Errorf("handler body doesn't preserve signature:\n%s", h.Body)
 	}
 }
 

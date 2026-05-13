@@ -3,8 +3,11 @@
 // 设计要点:
 //   - Chunk.ID 是 3 字节的 base64url 编码(4 字符),一旦分配永不变,
 //     与文件名/符号名解耦,是系统内部的稳定引用。
-//   - Chunk.Name 仅用于人类阅读和模糊定位兜底,不参与 ID 计算。
-//   - Chunk.ContentHash 用于增量判定和跨 session 的指纹对齐。
+//   - Chunk.Name 仅用于人类阅读,不参与 ID 计算,也不再做模糊回退。
+//   - Chunk 不再保留 Skeleton / Defines / ContentHash:
+//       - Skeleton:渲染时按需从 Body 抽首行签名,无需单独字段。
+//       - Defines:与 Name 完全冗余。
+//       - ContentHash:增量索引用的是文件级 hash(FileMeta.Hash),per-chunk hash 无用。
 package chunk
 
 import (
@@ -30,10 +33,9 @@ const (
 	KindSection     Kind = "Section"     // ATX 节级标题及其正文
 	KindFrontmatter Kind = "Frontmatter" // 文件首部 YAML/TOML 块
 	KindPreamble    Kind = "Preamble"    // 第一个标题之前的散文,或无标题文件全文
-
 )
 
-// Chunk 是 AST 切片的通用表达。无论来自 Go、TS、JS 都落到这个结构上。
+// Chunk 是 AST 切片的通用表达。无论来自 Go、TS、JS、Markdown 都落到这个结构上。
 type Chunk struct {
 	// ID 全局稳定唯一标识,格式为 4 字符 base64url(对应 3 字节随机)。
 	// 首次入库时由 NewID + 冲突检测分配,此后永不变更,即使文件被重命名。
@@ -50,32 +52,22 @@ type Chunk struct {
 	//   - Go  方法: "User.Save"
 	//   - TS  函数: "parseTSFile"
 	//   - TS  方法: "UserService.create"
-	// 可能重复,不可用作主键。
+	// 可能重复;仅用于展示,不参与定位。
 	Name string `json:"name"`
 
-	// Skeleton 是签名 + 占位体。用于 Pass1 Triage 时让 LLM 快速扫视。
-	Skeleton string `json:"skeleton"`
-
 	// Body 是完整源码(从签名起始到结束的原文切片,保留注释和缩进)。
+	// 渲染 SKELETON 时按需从 Body 抽首行签名,不再单独存一份。
 	Body string `json:"body"`
-
-	// Defines 列出本 Chunk 声明的符号。通常只有 Name 自己。
-	Defines []string `json:"defines"`
 
 	// Refs 列出本 Chunk 引用的外部符号。用于符号图构建与粗排序。
 	Refs []string `json:"refs,omitempty"`
-
-	// ContentHash 是 Body 的 xxhash64 十六进制。用于:
-	//   - 增量索引时判断内容是否真变了(mtime 不可靠)
-	//   - 冲突检测:同 ID 不同 hash 说明数据损坏
-	ContentHash string `json:"hash"`
 
 	// UpdatedAt 是最后一次入库的 Unix 秒。
 	UpdatedAt int64 `json:"updated_at"`
 }
 
-// HashBody 计算 body 的内容指纹,供 indexer 决定是否需要重入库。
-// 使用 xxhash64 的十六进制形式,16 字符。
+// HashBody 计算一段文本的内容指纹(xxhash64,16 字符十六进制)。
+// 用作文件级 hash(FileMeta.Hash)——per-chunk 已不再 hash。
 func HashBody(body string) string {
 	h := xxhash.Sum64String(body)
 	return fmt.Sprintf("%016x", h)
@@ -109,8 +101,7 @@ func AllocateID(exists map[string]struct{}) (string, error) {
 	return "", fmt.Errorf("chunk: failed to allocate unique ID after 64 attempts (existing=%d)", len(exists))
 }
 
-// QualifiedName 返回用于跨文件唯一索引的名字形式,格式:"<path>::<name>"。
-// 这不是 ID,只是反向索引 Name -> []ID 中的辅助键之一。
+// QualifiedName 返回 "<path>::<name>" 形式,仅用于日志/展示。
 func (c *Chunk) QualifiedName() string {
 	return c.FilePath + "::" + c.Name
 }

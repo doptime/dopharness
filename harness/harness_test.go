@@ -85,10 +85,6 @@ func dispatchTool(t *testing.T, toolList []any, name string, payload any) {
 			h(payload.(*tools.CreateFilePayload))
 		case func(*tools.DeleteFilePayload):
 			h(payload.(*tools.DeleteFilePayload))
-		case func(*tools.ReadChunkPayload):
-			h(payload.(*tools.ReadChunkPayload))
-		case func(*tools.SearchChunksByNamePayload):
-			h(payload.(*tools.SearchChunksByNamePayload))
 		default:
 			t.Fatalf("unknown handler for %s: %T", name, ft.handler)
 		}
@@ -448,7 +444,7 @@ func TestHarness_TS_EndToEnd(t *testing.T) {
 
 	h.AsLLMTools(fakeBuilder{})
 	h.cfg.MainCaller = successfulMainCaller(t, "modify_chunk", &tools.ModifyChunkPayload{
-		ChunkID:    greetID,
+		ChunkID: greetID,
 		NewContent: `export function greet(name: string): string {
     return "hello " + name + "!";
 }`,

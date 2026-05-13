@@ -199,10 +199,10 @@ type TaskSkillsLayer struct {
 	// Selector 决定本次要用哪些 skill。nil 时默认 AllSkills。
 	Selector SkillSelector
 
-	mu        sync.RWMutex
-	cached    []*Skill
-	dirMtime  int64
-	loadedOk  bool // 防止重复爆 error 日志
+	mu       sync.RWMutex
+	cached   []*Skill
+	dirMtime int64
+	loadedOk bool // 防止重复爆 error 日志
 }
 
 func (l *TaskSkillsLayer) Prefix() string { return "L3 Task Skills" }
@@ -312,7 +312,7 @@ func (l *TaskSkillsLayer) loadAll() ([]*Skill, error) {
 // 存储为 JSON,方便未来扩展字段(如 tags、outcome、duration)。
 type SessionRecord struct {
 	ID        string `json:"id"`
-	Timestamp int64  `json:"ts"`    // Unix 秒
+	Timestamp int64  `json:"ts"` // Unix 秒
 	Summary   string `json:"summary"`
 }
 
@@ -460,10 +460,11 @@ func (l *SessionRecordsLayer) loadAll() ([]*SessionRecord, error) {
 // ============================================================
 
 // LayoutDirs 是标准记忆目录布局。
-//   <root>/rules.md      -> L0
-//   <root>/facts.md      -> L2
-//   <root>/skills/       -> L3
-//   <root>/sessions/     -> L4
+//
+//	<root>/rules.md      -> L0
+//	<root>/facts.md      -> L2
+//	<root>/skills/       -> L3
+//	<root>/sessions/     -> L4
 type LayoutDirs struct {
 	Root string
 }

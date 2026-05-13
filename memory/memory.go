@@ -1,3 +1,4 @@
+
 // Package memory 实现 GenericAgent 风格的分层记忆 (L0-L4)。
 //
 // 设计哲学:

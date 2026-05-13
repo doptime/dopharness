@@ -1,3 +1,4 @@
+
 // Package skills 实现 dopharness 的 "flywheel skill" 体系。
 //
 // 一个 skill 文件就是一个普通 Go 文件,内含:

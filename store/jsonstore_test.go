@@ -11,11 +11,9 @@ import (
 // mkChunk 是测试里快速构造 chunk 的辅助函数。
 func mkChunk(name string, kind chunk.Kind, body string) *chunk.Chunk {
 	return &chunk.Chunk{
-		Name:     name,
-		Kind:     kind,
-		Body:     body,
-		Skeleton: body, // 测试里简化
-		Defines:  []string{name},
+		Name: name,
+		Kind: kind,
+		Body: body,
 	}
 }
 
@@ -53,9 +51,6 @@ func TestJSONStore_UpsertAllocatesID(t *testing.T) {
 		}
 		if len(c.ID) != 4 {
 			t.Errorf("chunk %s ID length want 4, got %d", c.Name, len(c.ID))
-		}
-		if c.ContentHash == "" {
-			t.Errorf("chunk %s has empty hash", c.Name)
 		}
 		if c.UpdatedAt == 0 {
 			t.Errorf("chunk %s has zero UpdatedAt", c.Name)
@@ -95,9 +90,9 @@ func TestJSONStore_UpsertReusesIDByNameKind(t *testing.T) {
 		t.Errorf("Bar ID changed: %s -> %s", barID, findID(second, "Bar"))
 	}
 
-	// 并且 Foo 的 hash 必须真变了
-	if c, _ := s.GetChunk(fooID); c.ContentHash == first[0].ContentHash {
-		t.Errorf("Foo hash unchanged despite body change")
+	// Foo 的 body 必须真变了
+	if c, _ := s.GetChunk(fooID); c.Body == first[0].Body {
+		t.Errorf("Foo body unchanged despite update")
 	}
 }
 
@@ -142,10 +137,29 @@ func TestJSONStore_UpsertDistinguishesByKind(t *testing.T) {
 	if result[0].ID == result[1].ID {
 		t.Errorf("same ID for different-kind chunks")
 	}
+}
 
-	matches := s.ChunksByName("User")
-	if len(matches) != 2 {
-		t.Errorf("ChunksByName('User') want 2, got %d", len(matches))
+// 关键测试:ChunksByFile 保留源码顺序。
+func TestJSONStore_ChunksByFilePreservesOrder(t *testing.T) {
+	dir := t.TempDir()
+	s := NewJSONStore(dir)
+	_ = s.Load()
+
+	_, _ = s.UpsertFile("a.go", "h1", 1000, []*chunk.Chunk{
+		mkChunk("First", chunk.KindFunction, "F"),
+		mkChunk("Second", chunk.KindFunction, "S"),
+		mkChunk("Third", chunk.KindFunction, "T"),
+	})
+
+	got := s.ChunksByFile("a.go")
+	if len(got) != 3 {
+		t.Fatalf("want 3 chunks, got %d", len(got))
+	}
+	wantOrder := []string{"First", "Second", "Third"}
+	for i, name := range wantOrder {
+		if got[i].Name != name {
+			t.Errorf("position %d: want %s, got %s", i, name, got[i].Name)
+		}
 	}
 }
 
@@ -190,11 +204,13 @@ func TestJSONStore_FlushThenReload(t *testing.T) {
 		t.Fatalf("flush: %v", err)
 	}
 
-	// 检查文件确实落盘
-	for _, f := range []string{"chunks.json", "files.json"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
-			t.Errorf("%s not written: %v", f, err)
-		}
+	// 单一持久化文件:只检查 files.json
+	if _, err := os.Stat(filepath.Join(dir, "files.json")); err != nil {
+		t.Errorf("files.json not written: %v", err)
+	}
+	// chunks.json 不再存在(消融简化的一部分)
+	if _, err := os.Stat(filepath.Join(dir, "chunks.json")); err == nil {
+		t.Errorf("chunks.json should no longer be written (merged into files.json)")
 	}
 
 	// 新实例重读
@@ -210,12 +226,8 @@ func TestJSONStore_FlushThenReload(t *testing.T) {
 	} else if c.Name != "Foo" {
 		t.Errorf("Foo chunk corrupted: name=%s", c.Name)
 	}
-	// 反向索引必须从主表重建
-	if len(s2.ChunksByName("Foo")) != 1 {
-		t.Errorf("byName not rebuilt on load")
-	}
 	if len(s2.ChunksByFile("a.go")) != 2 {
-		t.Errorf("byFile not rebuilt on load")
+		t.Errorf("ChunksByFile not rebuilt on load")
 	}
 }
 

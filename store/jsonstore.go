@@ -13,37 +13,30 @@ import (
 
 // JSONStore 是 ChunkStore 的单目录 JSON 实现。
 //
-// 磁盘布局:
+// 磁盘布局(只有一张表):
 //
-//	<dir>/
-//	  chunks.json    map[ID]Chunk
-//	  files.json     map[Path]FileMeta
+//	<dir>/files.json     map[Path]FileMeta   (chunks 内嵌进 FileMeta)
 //
-// 反向索引 Name -> []ID 和 Path -> []ID 不落盘,加载时从 chunks 派生。
-// 这样数据只有一个真源,不会出现双写不一致。
+// 反向索引 ID -> Chunk 不落盘,从 files map 派生。
+// 单源化 ⇒ 没有 chunks.json 和 files.json 互相不一致的可能。
 type JSONStore struct {
 	dir string
 
-	mu       sync.RWMutex
-	chunks   map[string]*chunk.Chunk // ID -> Chunk
-	files    map[string]*FileMeta    // Path -> FileMeta
-	byName   map[string][]string     // Name -> []ID (派生,不落盘)
-	byFile   map[string][]string     // Path -> []ID (派生,不落盘)
+	mu    sync.RWMutex
+	files map[string]*FileMeta    // Path -> FileMeta(磁盘单源)
+	byID  map[string]*chunk.Chunk // ID -> Chunk(派生,仅内存)
 }
 
 // NewJSONStore 构造一个绑定到指定目录的 JSONStore。目录会在 Load/Flush 时按需创建。
 func NewJSONStore(dir string) *JSONStore {
 	return &JSONStore{
-		dir:    dir,
-		chunks: map[string]*chunk.Chunk{},
-		files:  map[string]*FileMeta{},
-		byName: map[string][]string{},
-		byFile: map[string][]string{},
+		dir:   dir,
+		files: map[string]*FileMeta{},
+		byID:  map[string]*chunk.Chunk{},
 	}
 }
 
-func (s *JSONStore) chunksPath() string { return filepath.Join(s.dir, "chunks.json") }
-func (s *JSONStore) filesPath() string  { return filepath.Join(s.dir, "files.json") }
+func (s *JSONStore) filesPath() string { return filepath.Join(s.dir, "files.json") }
 
 // Load 从磁盘读取数据。文件不存在视为空库(首次运行)。
 func (s *JSONStore) Load() error {
@@ -54,18 +47,6 @@ func (s *JSONStore) Load() error {
 		return fmt.Errorf("store: mkdir %s: %w", s.dir, err)
 	}
 
-	// 读 chunks.json
-	if data, err := os.ReadFile(s.chunksPath()); err == nil {
-		var m map[string]*chunk.Chunk
-		if err := json.Unmarshal(data, &m); err != nil {
-			return fmt.Errorf("store: parse chunks.json: %w", err)
-		}
-		s.chunks = m
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("store: read chunks.json: %w", err)
-	}
-
-	// 读 files.json
 	if data, err := os.ReadFile(s.filesPath()); err == nil {
 		var m map[string]*FileMeta
 		if err := json.Unmarshal(data, &m); err != nil {
@@ -76,7 +57,7 @@ func (s *JSONStore) Load() error {
 		return fmt.Errorf("store: read files.json: %w", err)
 	}
 
-	s.rebuildIndexes()
+	s.rebuildByID()
 	return nil
 }
 
@@ -88,13 +69,7 @@ func (s *JSONStore) Flush() error {
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return fmt.Errorf("store: mkdir %s: %w", s.dir, err)
 	}
-	if err := writeJSONAtomic(s.chunksPath(), s.chunks); err != nil {
-		return err
-	}
-	if err := writeJSONAtomic(s.filesPath(), s.files); err != nil {
-		return err
-	}
-	return nil
+	return writeJSONAtomic(s.filesPath(), s.files)
 }
 
 func writeJSONAtomic(path string, v any) error {
@@ -113,13 +88,16 @@ func writeJSONAtomic(path string, v any) error {
 	return nil
 }
 
-// rebuildIndexes 从主表重建 byName / byFile 反向索引。调用方需要持写锁。
-func (s *JSONStore) rebuildIndexes() {
-	s.byName = map[string][]string{}
-	s.byFile = map[string][]string{}
-	for id, c := range s.chunks {
-		s.byName[c.Name] = append(s.byName[c.Name], id)
-		s.byFile[c.FilePath] = append(s.byFile[c.FilePath], id)
+// rebuildByID 从 files 重建 ID -> Chunk 反向索引。调用方需要持写锁。
+func (s *JSONStore) rebuildByID() {
+	s.byID = map[string]*chunk.Chunk{}
+	for _, fm := range s.files {
+		for _, c := range fm.Chunks {
+			if c.FilePath == "" {
+				c.FilePath = fm.Path
+			}
+			s.byID[c.ID] = c
+		}
 	}
 }
 
@@ -127,7 +105,7 @@ func (s *JSONStore) rebuildIndexes() {
 func (s *JSONStore) GetChunk(id string) (*chunk.Chunk, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	c, ok := s.chunks[id]
+	c, ok := s.byID[id]
 	return c, ok
 }
 
@@ -135,38 +113,23 @@ func (s *JSONStore) GetChunk(id string) (*chunk.Chunk, bool) {
 func (s *JSONStore) AllChunks() []*chunk.Chunk {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]*chunk.Chunk, 0, len(s.chunks))
-	for _, c := range s.chunks {
+	out := make([]*chunk.Chunk, 0, len(s.byID))
+	for _, c := range s.byID {
 		out = append(out, c)
 	}
 	return out
 }
 
-// ChunksByName 按 Name 返回匹配。
-func (s *JSONStore) ChunksByName(name string) []*chunk.Chunk {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	ids := s.byName[name]
-	out := make([]*chunk.Chunk, 0, len(ids))
-	for _, id := range ids {
-		if c, ok := s.chunks[id]; ok {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
-// ChunksByFile 按文件路径返回。
+// ChunksByFile 按文件路径返回 chunk,源码出现顺序。
 func (s *JSONStore) ChunksByFile(path string) []*chunk.Chunk {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	ids := s.byFile[path]
-	out := make([]*chunk.Chunk, 0, len(ids))
-	for _, id := range ids {
-		if c, ok := s.chunks[id]; ok {
-			out = append(out, c)
-		}
+	fm, ok := s.files[path]
+	if !ok {
+		return nil
 	}
+	out := make([]*chunk.Chunk, len(fm.Chunks))
+	copy(out, fm.Chunks)
 	return out
 }
 
@@ -207,31 +170,26 @@ func (s *JSONStore) UpsertFile(path string, fileHash string, mtime int64, newChu
 	candidates := map[string][]*candidate{}
 	oldMeta, hadOld := s.files[path]
 	if hadOld {
-		for _, oid := range oldMeta.ChunkIDs {
-			if oc, ok := s.chunks[oid]; ok {
-				key := oc.Name + "|" + string(oc.Kind)
-				candidates[key] = append(candidates[key], &candidate{id: oid})
-			}
+		for _, oc := range oldMeta.Chunks {
+			key := oc.Name + "|" + string(oc.Kind)
+			candidates[key] = append(candidates[key], &candidate{id: oc.ID})
 		}
 	}
 
 	// 2. 构造"全部已存在 ID"集合,用于新 ID 分配时避让冲突
-	exists := make(map[string]struct{}, len(s.chunks))
-	for id := range s.chunks {
+	exists := make(map[string]struct{}, len(s.byID))
+	for id := range s.byID {
 		exists[id] = struct{}{}
 	}
 
 	now := time.Now().Unix()
-	finalIDs := make([]string, 0, len(newChunks))
 	resultChunks := make([]*chunk.Chunk, 0, len(newChunks))
+	reusedSet := map[string]bool{}
 
 	for _, nc := range newChunks {
 		// 确保关键字段齐全
 		if nc.FilePath == "" {
 			nc.FilePath = path
-		}
-		if nc.ContentHash == "" {
-			nc.ContentHash = chunk.HashBody(nc.Body)
 		}
 		nc.UpdatedAt = now
 
@@ -248,6 +206,7 @@ func (s *JSONStore) UpsertFile(path string, fileHash string, mtime int64, newChu
 
 		if reusedID != "" {
 			nc.ID = reusedID
+			reusedSet[reusedID] = true
 		} else {
 			// 2.2 分配新 ID
 			newID, err := chunk.AllocateID(exists)
@@ -258,34 +217,30 @@ func (s *JSONStore) UpsertFile(path string, fileHash string, mtime int64, newChu
 			exists[newID] = struct{}{}
 		}
 
-		s.chunks[nc.ID] = nc
-		finalIDs = append(finalIDs, nc.ID)
 		resultChunks = append(resultChunks, nc)
 	}
 
-	// 3. 淘汰:旧文件中未被复用的 chunk
+	// 3. 淘汰:旧文件中未被复用的 chunk 从 byID 摘除
 	if hadOld {
-		reused := map[string]bool{}
-		for _, id := range finalIDs {
-			reused[id] = true
-		}
-		for _, oid := range oldMeta.ChunkIDs {
-			if !reused[oid] {
-				delete(s.chunks, oid)
+		for _, oc := range oldMeta.Chunks {
+			if !reusedSet[oc.ID] {
+				delete(s.byID, oc.ID)
 			}
 		}
 	}
 
-	// 4. 更新 FileMeta
+	// 4. 写入 FileMeta(chunks 直接内嵌,保持源码顺序)
 	s.files[path] = &FileMeta{
-		Path:     path,
-		ModTime:  mtime,
-		Hash:     fileHash,
-		ChunkIDs: finalIDs,
+		Path:    path,
+		ModTime: mtime,
+		Hash:    fileHash,
+		Chunks:  resultChunks,
 	}
 
-	// 5. 重建受影响的反向索引(简单起见,整个重建;如果成为瓶颈再优化)
-	s.rebuildIndexes()
+	// 5. 刷新 byID 中本文件相关条目
+	for _, c := range resultChunks {
+		s.byID[c.ID] = c
+	}
 
 	return resultChunks, nil
 }
@@ -299,11 +254,10 @@ func (s *JSONStore) DeleteFile(path string) error {
 	if !ok {
 		return nil // 幂等
 	}
-	for _, id := range meta.ChunkIDs {
-		delete(s.chunks, id)
+	for _, c := range meta.Chunks {
+		delete(s.byID, c.ID)
 	}
 	delete(s.files, path)
-	s.rebuildIndexes()
 	return nil
 }
 

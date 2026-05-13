@@ -80,15 +80,15 @@ func TestParseGoFile_AllDeclsCaptured(t *testing.T) {
 
 	// 预期的 Name 列表
 	want := map[string]Kind{
-		"User":          KindStruct,
-		"Saver":         KindInterface,
-		"Alias":         KindType,
-		"Greet":         KindFunction,
-		"User.Save":     KindMethod,
-		"User.String":   KindMethod,
-		"GenericMap":    KindStruct,
+		"User":           KindStruct,
+		"Saver":          KindInterface,
+		"Alias":          KindType,
+		"Greet":          KindFunction,
+		"User.Save":      KindMethod,
+		"User.String":    KindMethod,
+		"GenericMap":     KindStruct,
 		"GenericMap.Put": KindMethod,
-		"doSave":        KindFunction,
+		"doSave":         KindFunction,
 	}
 
 	got := map[string]Kind{}
@@ -114,14 +114,14 @@ func TestParseGoFile_AllDeclsCaptured(t *testing.T) {
 	}
 }
 
-func TestParseGoFile_SkeletonPreservesDocAndSignature(t *testing.T) {
+func TestParseGoFile_BodyPreservesDocAndSignature(t *testing.T) {
 	abs, rel := writeFixture(t, goFixture)
 	chunks, err := ParseGoFile(abs, rel)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 
-	// 找 Greet 的骨架
+	// 找 Greet
 	var greet *Chunk
 	for _, c := range chunks {
 		if c.Name == "Greet" {
@@ -133,20 +133,15 @@ func TestParseGoFile_SkeletonPreservesDocAndSignature(t *testing.T) {
 		t.Fatal("Greet not found")
 	}
 
-	// 骨架必须包含 doc comment 和完整签名
-	if !strings.Contains(greet.Skeleton, "// Greet 打个招呼。") {
-		t.Errorf("skeleton missing doc comment:\n%s", greet.Skeleton)
+	// Body 必须包含 doc comment、完整签名、以及函数体
+	if !strings.Contains(greet.Body, "// Greet 打个招呼。") {
+		t.Errorf("body missing doc comment:\n%s", greet.Body)
 	}
-	if !strings.Contains(greet.Skeleton, "func Greet(name string) string") {
-		t.Errorf("skeleton missing signature:\n%s", greet.Skeleton)
+	if !strings.Contains(greet.Body, "func Greet(name string) string") {
+		t.Errorf("body missing signature:\n%s", greet.Body)
 	}
-	// 函数体内容(fmt.Sprintf)不应出现在骨架中
-	if strings.Contains(greet.Skeleton, "fmt.Sprintf") {
-		t.Errorf("skeleton leaked body content:\n%s", greet.Skeleton)
-	}
-	// 但 Body 必须有
 	if !strings.Contains(greet.Body, "fmt.Sprintf") {
-		t.Errorf("body missing content:\n%s", greet.Body)
+		t.Errorf("body missing implementation:\n%s", greet.Body)
 	}
 }
 
@@ -196,7 +191,7 @@ func TestParseGoFile_RefsCaptured(t *testing.T) {
 }
 
 func TestParseGoFile_InterfaceMethodNoBody(t *testing.T) {
-	// 接口方法没有 body,确保不会 panic 且 Skeleton == Body
+	// 接口方法没有 body,确保不会 panic 且 Body 完整保留
 	src := `package demo
 
 type Reader interface {
@@ -213,6 +208,9 @@ type Reader interface {
 	}
 	if chunks[0].Kind != KindInterface {
 		t.Errorf("want Interface, got %s", chunks[0].Kind)
+	}
+	if !strings.Contains(chunks[0].Body, "Read(p []byte)") {
+		t.Errorf("body missing interface method:\n%s", chunks[0].Body)
 	}
 }
 

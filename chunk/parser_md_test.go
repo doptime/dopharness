@@ -189,8 +189,8 @@ func TestMarkdown_EmptyFile(t *testing.T) {
 	}
 }
 
-// TestMarkdown_StableHashOnReparse:同样输入应得到同样 ContentHash(确定性保证)。
-func TestMarkdown_StableHashOnReparse(t *testing.T) {
+// TestMarkdown_StableBodyOnReparse:同样输入应产出同样的 chunk Body(确定性保证)。
+func TestMarkdown_StableBodyOnReparse(t *testing.T) {
 	src := "## A\nbody\n## B\nbody\n"
 	first := parseMarkdownContent(src, "doc.md", 2)
 	second := parseMarkdownContent(src, "doc.md", 2)
@@ -198,9 +198,9 @@ func TestMarkdown_StableHashOnReparse(t *testing.T) {
 		t.Fatalf("non-deterministic chunk count")
 	}
 	for i := range first {
-		if first[i].ContentHash != second[i].ContentHash {
-			t.Errorf("chunk %d hash drifted between parses: %s vs %s",
-				i, first[i].ContentHash, second[i].ContentHash)
+		if first[i].Body != second[i].Body {
+			t.Errorf("chunk %d body drifted between parses:\n%q\nvs\n%q",
+				i, first[i].Body, second[i].Body)
 		}
 	}
 }

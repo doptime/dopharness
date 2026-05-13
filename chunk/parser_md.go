@@ -30,18 +30,10 @@ import (
 //	2 → 按 H2 切(默认,适合大多数 README / 设计文档)
 //	3 → 按 H3 切(细粒度,适合长篇手册)
 //
-// 想动态调整时,直接改这个变量(全局生效)。如果需要每个文件独立粒度,
-// 可以在 frontmatter 里加 dopharness_chunk_level: N(本 v1 不实现,留给后续)。
+// 想动态调整时,直接改这个变量(全局生效)。
 var MarkdownChunkLevel = 2
 
 // ParseMarkdownFile 接口签名与 ParseGoFile 一致,可以直接挂进 indexer 的 dispatch 表。
-//
-// indexer.go 的接入点示意:
-//
-//	case ".md", ".markdown":
-//	    chunks, err := chunk.ParseMarkdownFile(absPath, relPath)
-//
-// 不返回 ID,由 store.UpsertFile 分配。
 func ParseMarkdownFile(absPath, relPath string) ([]*Chunk, error) {
 	content, err := os.ReadFile(absPath)
 	if err != nil {
@@ -51,9 +43,6 @@ func ParseMarkdownFile(absPath, relPath string) ([]*Chunk, error) {
 }
 
 // parseMarkdownContent 是核心切片逻辑,与磁盘 IO 解耦,便于单测。
-//
-// 为什么单独一层:Go 测试里直接喂字符串构造各种 corner case(代码栅栏内伪标题、
-// 跳级标题、空文件、纯 frontmatter)比写临时文件清爽。
 func parseMarkdownContent(content, relPath string, level int) []*Chunk {
 	if level < 1 {
 		level = 1
@@ -91,10 +80,9 @@ func parseMarkdownContent(content, relPath string, level int) []*Chunk {
 		}
 		if isH, lvl, name := parseATXHeading(line); isH && lvl <= level {
 			headings = append(headings, headingPos{
-				line:        i,
-				level:       lvl,
-				name:        name,
-				headingText: line,
+				line:  i,
+				level: lvl,
+				name:  name,
 			})
 		}
 	}
@@ -105,13 +93,10 @@ func parseMarkdownContent(content, relPath string, level int) []*Chunk {
 	if frontmatterEnd > 0 {
 		body := strings.Join(lines[:frontmatterEnd+1], "\n")
 		chunks = append(chunks, &Chunk{
-			FilePath:    relPath,
-			Kind:        KindFrontmatter,
-			Name:        "frontmatter",
-			Body:        body,
-			Skeleton:    "---\n[frontmatter]\n---",
-			Defines:     []string{"frontmatter"},
-			ContentHash: HashBody(body),
+			FilePath: relPath,
+			Kind:     KindFrontmatter,
+			Name:     "frontmatter",
+			Body:     body,
 		})
 	}
 
@@ -125,14 +110,11 @@ func parseMarkdownContent(content, relPath string, level int) []*Chunk {
 		body := strings.Join(lines[preambleStart:firstHeadingLine], "\n")
 		if strings.TrimSpace(body) != "" {
 			chunks = append(chunks, &Chunk{
-				FilePath:    relPath,
-				Kind:        KindPreamble,
-				Name:        "preamble",
-				Body:        body,
-				Skeleton:    skeletonFromBody(body),
-				Defines:     []string{"preamble"},
-				Refs:        extractMarkdownRefs(body),
-				ContentHash: HashBody(body),
+				FilePath: relPath,
+				Kind:     KindPreamble,
+				Name:     "preamble",
+				Body:     body,
+				Refs:     extractMarkdownRefs(body),
 			})
 		}
 	}
@@ -149,12 +131,7 @@ func parseMarkdownContent(content, relPath string, level int) []*Chunk {
 			Kind:     KindSection,
 			Name:     h.name,
 			Body:     body,
-			// Skeleton 是用于 Pass1 Triage 的"快速扫视"形式:只保留标题行
-			// 加一行说明子节数,让小模型在不看正文的前提下能判断这一节是否相关。
-			Skeleton:    h.headingText + "\n[" + sectionSummary(body, h.level) + "]",
-			Defines:     []string{h.name},
-			Refs:        extractMarkdownRefs(body),
-			ContentHash: HashBody(body),
+			Refs:     extractMarkdownRefs(body),
 		})
 	}
 
@@ -163,14 +140,11 @@ func parseMarkdownContent(content, relPath string, level int) []*Chunk {
 		body := strings.TrimSpace(content)
 		if body != "" {
 			chunks = append(chunks, &Chunk{
-				FilePath:    relPath,
-				Kind:        KindPreamble,
-				Name:        "content",
-				Body:        body,
-				Skeleton:    skeletonFromBody(body),
-				Defines:     []string{"content"},
-				Refs:        extractMarkdownRefs(body),
-				ContentHash: HashBody(body),
+				FilePath: relPath,
+				Kind:     KindPreamble,
+				Name:     "content",
+				Body:     body,
+				Refs:     extractMarkdownRefs(body),
 			})
 		}
 	}
@@ -180,10 +154,9 @@ func parseMarkdownContent(content, relPath string, level int) []*Chunk {
 
 // headingPos 是 parser 内部记录每个被识别标题位置的小结构。
 type headingPos struct {
-	line        int    // 在 lines 数组里的下标
-	level       int    // 1..6
-	name        string // 标题文本(已去除 # 和首尾空格)
-	headingText string // 原始整行(用于 Skeleton)
+	line  int    // 在 lines 数组里的下标
+	level int    // 1..6
+	name  string // 标题文本(已去除 # 和首尾空格)
 }
 
 // atxHeadingRE 匹配 ATX 风格标题。
@@ -239,49 +212,4 @@ func extractMarkdownRefs(body string) []string {
 		}
 	}
 	return out
-}
-
-// skeletonFromBody 取 body 的前若干非空行作为骨架。Pass1 Triage 看的就是它。
-// 上限 3 行,每行 80 字符,够小模型判断主题且不爆 token。
-func skeletonFromBody(body string) string {
-	var pick []string
-	for _, l := range strings.Split(body, "\n") {
-		t := strings.TrimSpace(l)
-		if t == "" {
-			continue
-		}
-		if len(t) > 80 {
-			t = t[:80] + "..."
-		}
-		pick = append(pick, t)
-		if len(pick) >= 3 {
-			break
-		}
-	}
-	if len(pick) == 0 {
-		return "[empty]"
-	}
-	return strings.Join(pick, "\n")
-}
-
-// sectionSummary 给 Section 的 Skeleton 加一行元信息:子节数 + 字数。
-// 让 LLM 不用看正文也能粗判这是个"重要大节"还是"过场小节"。
-func sectionSummary(body string, parentLevel int) string {
-	subCount := 0
-	inFence := false
-	for _, line := range strings.Split(body, "\n") {
-		ltrim := strings.TrimLeft(line, " \t")
-		if strings.HasPrefix(ltrim, "```") || strings.HasPrefix(ltrim, "~~~") {
-			inFence = !inFence
-			continue
-		}
-		if inFence {
-			continue
-		}
-		if isH, lvl, _ := parseATXHeading(line); isH && lvl > parentLevel {
-			subCount++
-		}
-	}
-	wc := len(strings.Fields(body))
-	return fmt.Sprintf("subsections=%d, words=%d", subCount, wc)
 }

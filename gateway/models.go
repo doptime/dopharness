@@ -1,3 +1,4 @@
+
 // Package gateway 是 dopharness 的"上下文网关"—— 决定每个 chunk 以何种形态(忽略/摘要/原文)
 // 进入最终发给 LLM 的 prompt。
 //
@@ -75,32 +76,36 @@ type ChunkView struct {
 	Kind     chunk.Kind
 	Name     string
 	FilePath string
-	// Signature 是一行签名(Skeleton 的第一行 /* 去掉 doc 后 */)
+	// Signature 是一行签名(Body 中首条非注释行,通常就是 func/type/heading 那一行)
 	Signature string
 	// Refs 是这个 chunk 引用的外部符号名字列表(不含本身定义的符号)
 	Refs []string
 }
 
 // ToView 把 chunk.Chunk 转成 Pass1 要用的 ChunkView。
+//
+// Signature 直接从 Body 抽首条非注释行——对 Go func/method 是签名行,对 type/struct
+// 是 "type X struct {" 行,对 markdown section 是标题行。比当年专门存一份 Skeleton
+// 字段更省存储,也避免 parser/renderer 两边维护两套缩写。
 func ToView(c *chunk.Chunk) *ChunkView {
 	return &ChunkView{
 		ID:        c.ID,
 		Kind:      c.Kind,
 		Name:      c.Name,
 		FilePath:  c.FilePath,
-		Signature: firstMeaningfulLine(c.Skeleton),
+		Signature: firstMeaningfulLine(c.Body),
 		Refs:      c.Refs,
 	}
 }
 
-// firstMeaningfulLine 从 skeleton 里抽出一行"最有信息量的"签名文字。
+// firstMeaningfulLine 从一段源码里抽出一行"最有信息量的"代码文字。
 // 策略:跳过以 "//" "/*" "*" 开头的注释行和空行,取第一条实代码行。
-// 如果全是注释(罕见),退化为 skeleton 的第一行。
-func firstMeaningfulLine(skeleton string) string {
+// 如果全是注释(罕见),退化为首个非空行。
+func firstMeaningfulLine(text string) string {
 	start := 0
-	for i := 0; i < len(skeleton); i++ {
-		if skeleton[i] == '\n' {
-			line := skeleton[start:i]
+	for i := 0; i < len(text); i++ {
+		if text[i] == '\n' {
+			line := text[start:i]
 			if isSignatureLine(line) {
 				return trimLeadingSpace(line)
 			}
@@ -108,25 +113,25 @@ func firstMeaningfulLine(skeleton string) string {
 		}
 	}
 	// 最后一行
-	if start < len(skeleton) {
-		line := skeleton[start:]
+	if start < len(text) {
+		line := text[start:]
 		if isSignatureLine(line) {
 			return trimLeadingSpace(line)
 		}
 	}
 	// 全是注释:返回首个非空行
 	start = 0
-	for i := 0; i < len(skeleton); i++ {
-		if skeleton[i] == '\n' {
-			line := skeleton[start:i]
+	for i := 0; i < len(text); i++ {
+		if text[i] == '\n' {
+			line := text[start:i]
 			if trimLeadingSpace(line) != "" {
 				return trimLeadingSpace(line)
 			}
 			start = i + 1
 		}
 	}
-	if start < len(skeleton) {
-		return trimLeadingSpace(skeleton[start:])
+	if start < len(text) {
+		return trimLeadingSpace(text[start:])
 	}
 	return ""
 }

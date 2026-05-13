@@ -87,79 +87,41 @@ func hasBunRuntime() bool {
 	return false
 }
 
-// --- Locator 单元测试 ---
+// --- 定位单元测试 ---
 
-func TestLocator_ExactHit(t *testing.T) {
-	ap, st, _ := setupEditEnv(t, map[string]string{
-		"a.go": `package a
-func Foo() {}
-func Bar() {}
-`,
-	})
-	var fooID string
-	for _, c := range st.AllChunks() {
-		if c.Name == "Foo" {
-			fooID = c.ID
-		}
-	}
-	loc := ap.Locator.Locate(fooID, "")
-	if loc.Outcome != LocateExact {
-		t.Errorf("want Exact, got %s: %s", loc.Outcome, loc.Message)
-	}
-	if loc.Chunk.Name != "Foo" {
-		t.Errorf("wrong chunk: %s", loc.Chunk.Name)
-	}
-}
-
-func TestLocator_FuzzyByName(t *testing.T) {
+func TestApply_LocateMissReturnsLocationOutcome(t *testing.T) {
 	ap, _, _ := setupEditEnv(t, map[string]string{
 		"a.go": `package a
 func Foo() {}
 `,
 	})
-	// LLM 给了个看起来像老式 ID 的东西:"a.go:Foo"
-	loc := ap.Locator.Locate("a.go:Foo", "")
-	if loc.Outcome != LocateFuzzyUnique {
-		t.Errorf("want FuzzyUnique, got %s: %s", loc.Outcome, loc.Message)
-	}
-	if loc.Chunk == nil || loc.Chunk.Name != "Foo" {
-		t.Errorf("fallback should resolve to Foo, got %+v", loc.Chunk)
-	}
-}
-
-func TestLocator_Ambiguous(t *testing.T) {
-	ap, _, _ := setupEditEnv(t, map[string]string{
-		"a.go": `package a
-func Helper() {}
-`,
-		"b.go": `package b
-func Helper() {}
-`,
+	// 不存在的 ID:不再做 byName 兜底,直接 OutcomeLocation。
+	res := ap.Apply(&Modification{
+		Action:     ActionModify,
+		ChunkID:    "zzzz",
+		NewContent: "func Foo() { _ = 1 }",
 	})
-	loc := ap.Locator.Locate("", "Helper")
-	if loc.Outcome != LocateAmbiguous {
-		t.Errorf("want Ambiguous, got %s: %s", loc.Outcome, loc.Message)
+	if res.Outcome != OutcomeLocation {
+		t.Errorf("want OutcomeLocation, got %s: %s", res.Outcome, res.Message)
 	}
-	if len(loc.Candidates) != 2 {
-		t.Errorf("want 2 candidates, got %d", len(loc.Candidates))
-	}
-	if !strings.Contains(loc.Message, "ambiguous") {
-		t.Errorf("message not helpful: %s", loc.Message)
+	if !strings.Contains(res.Message, "zzzz") {
+		t.Errorf("error message should echo the bad ID: %s", res.Message)
 	}
 }
 
-func TestLocator_Missing(t *testing.T) {
+func TestApply_EmptyChunkIDIsLocationError(t *testing.T) {
 	ap, _, _ := setupEditEnv(t, map[string]string{
 		"a.go": `package a
 func Foo() {}
 `,
 	})
-	loc := ap.Locator.Locate("", "NonExistent")
-	if loc.Outcome != LocateMissing {
-		t.Errorf("want Missing, got %s", loc.Outcome)
-	}
-	if !strings.Contains(loc.Message, "CREATE_FILE") {
-		t.Errorf("missing message should hint at CREATE_FILE: %s", loc.Message)
+	res := ap.Apply(&Modification{
+		Action:     ActionModify,
+		ChunkID:    "",
+		NewContent: "func Foo() {}",
+	})
+	if res.Outcome != OutcomeLocation {
+		t.Errorf("want OutcomeLocation for empty id, got %s", res.Outcome)
 	}
 }
 

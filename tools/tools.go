@@ -1,3 +1,4 @@
+
 // Package tools 把 dopharness 的修改能力封装成可注册到 LLM Agent 的工具。
 //
 // 每个 Action 都是一个独立的 Tool —— 尽管底层都走 edit.Applier,
@@ -145,10 +146,12 @@ func (f ToolBuilderFunc) Build(name, description string, handler any) any {
 type Bundle struct {
 	Tools     []any      // 可直接展开为 llm.Agent.UseTools(...) 的参数
 	Collector *Collector // 所有工具写入同一个收集器
-	Applier   *edit.Applier
 }
 
-// BuildEditingTools 用 ToolBuilder 构造 5 个修改类工具 + 2 个只读查询工具。
+// BuildEditingTools 用 ToolBuilder 构造 5 个修改类工具。
+//
+// 不再提供 read_chunk / search_chunks_by_name —— Renderer 已经按文件分组把
+// 相关 chunk 全量(或骨架)写进 prompt,LLM 没必要单独再问。
 //
 // 返回的 Bundle.Tools 顺序:
 //   [0] modify_chunk
@@ -156,12 +159,9 @@ type Bundle struct {
 //   [2] add_chunk
 //   [3] create_file
 //   [4] delete_file
-//   [5] read_chunk        (见 inspect.go)
-//   [6] search_chunks_by_name
 func BuildEditingTools(ap *edit.Applier, b ToolBuilder) *Bundle {
 	bundle := &Bundle{
 		Collector: NewCollector(),
-		Applier:   ap,
 	}
 
 	// -- modify_chunk --
@@ -257,9 +257,6 @@ func BuildEditingTools(ap *edit.Applier, b ToolBuilder) *Bundle {
 		"删除整个文件及其所有 chunk。谨慎使用。",
 		deleteFileHandler,
 	))
-
-	// 只读工具在 inspect.go
-	addInspectTools(ap, b, bundle)
 
 	return bundle
 }

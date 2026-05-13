@@ -9,14 +9,15 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"unicode/utf8"
 )
 
 // LoadSkillFile 把单个 .go 文件解析成 0 个或多个 *Skill。
 //
 // 一个 skill 由两部分组成:
-//   1. 一个 type 声明: type X struct { ... }
-//   2. 一个同名的常量声明: const XSOP = "..."  (字符串字面量;支持 raw 与
-//      普通字符串)
+//  1. 一个 type 声明: type X struct { ... }
+//  2. 一个同名的常量声明: const XSOP = "..."  (字符串字面量;支持 raw 与
+//     普通字符串)
 //
 // 两者的对应关系按名字匹配:type 名字加 "SOP" 后缀就是常量名。文件中可以有
 // 多对 (type, SOP) 共存;type 没有匹配的 SOP 会被忽略(允许文件里出现纯
@@ -134,7 +135,9 @@ func LoadSkillFile(path string) ([]*Skill, error) {
 }
 
 // stripDocLeadingTypeName 把 doc 注释开头的 "TypeName " 去掉。
-//   "AddRoute 在 router 里新增一条路由"  ->  "在 router 里新增一条路由"
+//
+//	"AddRoute 在 router 里新增一条路由"  ->  "在 router 里新增一条路由"
+//
 // 找不到匹配前缀就原样返回。
 func stripDocLeadingTypeName(doc, typeName string) string {
 	if doc == "" || typeName == "" {
@@ -148,7 +151,7 @@ func stripDocLeadingTypeName(doc, typeName string) string {
 		return doc // doc 就是类型名本身,保留
 	}
 	// 后面必须是空白字符,否则不是真前缀(防止误吃 AddRouteHandler 这种)
-	r := rest[0]
+	r, _ := utf8.DecodeRuneInString(rest)
 	if r == ' ' || r == '\t' || r == ':' || r == ',' || r == '。' || r == '.' {
 		return strings.TrimSpace(strings.TrimLeft(rest, " \t:,。."))
 	}

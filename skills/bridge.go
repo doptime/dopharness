@@ -13,13 +13,14 @@ import (
 // tool 集执行一段渲染好的 prompt。
 //
 // 参数:
-//   ctx        —— 父 Agent 透传下来的 context(cancellation 链)
-//   sopPrompt  —— 已经把 skill 的 struct 字段填到 SOP 模板后的最终 prompt
-//   skillName  —— 触发本次执行的 skill 名,便于上层做 tracing / 防递归 / 限额
+//
+//	ctx        —— 父 Agent 透传下来的 context(cancellation 链)
+//	sopPrompt  —— 已经把 skill 的 struct 字段填到 SOP 模板后的最终 prompt
+//	skillName  —— 触发本次执行的 skill 名,便于上层做 tracing / 防递归 / 限额
 //
 // 实现方负责:
 //   - 起一个 sub-agent (典型用同一个 Harness 的 MainCaller 跑一次 agent.Call)
-//   - 把 dopharness 的 built-in tools(modify_chunk / read_chunk / ...)注册给它
+//   - 把 dopharness 的 built-in tools(modify_chunk / create_file / ...)注册给它
 //   - **不要** 把 skill 集合也注册给 sub-agent(防递归;skill 的"展开"只发生一层)
 //   - 把 sub-agent 的成败 / 工具执行摘要返回给 skill 调用方
 //
@@ -30,12 +31,12 @@ type SubAgentRunner func(ctx context.Context, sopPrompt string, skillName string
 // AsLLMTool 把 Skill 包装成 llm.ToolInterface,可以直接传给 agent.UseTools。
 //
 // 工作流:
-//   1. LLM 把 JSON 参数发给 skill 这个 toolcall
-//   2. doptime/llm 的 DynamicTool.HandleCallback 把 JSON 反序列化进
-//      reflect.New(s.StructType) 分配的 *T
-//   3. sink 拿到 *T,用 text/template 渲染 SOPTemplate
-//   4. sink 调 runner,把渲染好的 prompt 喂给 sub-agent
-//   5. sub-agent 用 built-in tools 执行,完成后返回成败
+//  1. LLM 把 JSON 参数发给 skill 这个 toolcall
+//  2. doptime/llm 的 DynamicTool.HandleCallback 把 JSON 反序列化进
+//     reflect.New(s.StructType) 分配的 *T
+//  3. sink 拿到 *T,用 text/template 渲染 SOPTemplate
+//  4. sink 调 runner,把渲染好的 prompt 喂给 sub-agent
+//  5. sub-agent 用 built-in tools 执行,完成后返回成败
 //
 // runner 通常由 harness 提供,skills 包不感知具体的 LLM / Agent 类型。
 func (s *Skill) AsLLMTool(runner SubAgentRunner) llm.ToolInterface {

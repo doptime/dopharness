@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/cespare/xxhash/v2"
@@ -103,16 +102,18 @@ func (p *TSParser) ensureScript() error {
 }
 
 // sidecarResult 对应 sidecar.ts 的 FileResult 输出。
+//
+// sidecar 可能仍会输出 skeleton 字段,我们的 unmarshal 忽略它(JSON decoder 对
+// 未声明字段默认丢弃)。这样不需要同步改动 sidecar.ts —— 双方各自瘦身。
 type sidecarResult struct {
 	File   string `json:"file"`
 	OK     bool   `json:"ok"`
 	Error  string `json:"error,omitempty"`
 	Chunks []struct {
-		Kind     string   `json:"kind"`
-		Name     string   `json:"name"`
-		Skeleton string   `json:"skeleton"`
-		Body     string   `json:"body"`
-		Refs     []string `json:"refs"`
+		Kind string   `json:"kind"`
+		Name string   `json:"name"`
+		Body string   `json:"body"`
+		Refs []string `json:"refs"`
 	} `json:"chunks,omitempty"`
 }
 
@@ -223,14 +224,11 @@ func (p *TSParser) ParseTSFiles(reqs []TSFileReq) ([]*TSFileResult, error) {
 				kind = KindType
 			}
 			chunks = append(chunks, &Chunk{
-				FilePath:    relPath,
-				Kind:        kind,
-				Name:        rc.Name,
-				Skeleton:    rc.Skeleton,
-				Body:        rc.Body,
-				Defines:     definesFromName(rc.Name),
-				Refs:        rc.Refs,
-				ContentHash: HashBody(rc.Body),
+				FilePath: relPath,
+				Kind:     kind,
+				Name:     rc.Name,
+				Body:     rc.Body,
+				Refs:     rc.Refs,
 			})
 		}
 		res.Chunks = chunks
@@ -252,16 +250,6 @@ func (p *TSParser) ParseTSFiles(reqs []TSFileReq) ([]*TSFileResult, error) {
 	}
 
 	return results, nil
-}
-
-// definesFromName 从限定名中提取"定义的符号"。
-//   - "greet"          -> ["greet"]
-//   - "UserService.add" -> ["add"]  (方法的定义符号是方法名本身,不含 receiver)
-func definesFromName(name string) []string {
-	if idx := strings.LastIndex(name, "."); idx >= 0 {
-		return []string{name[idx+1:]}
-	}
-	return []string{name}
 }
 
 // TSRawError 是一条最小化的 TS 语法错误。

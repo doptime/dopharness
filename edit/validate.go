@@ -6,8 +6,6 @@ import (
 	"go/token"
 	"path/filepath"
 	"strings"
-
-	"github.com/doptime/dopharness/chunk"
 )
 
 // ValidationStage 指示哪一级校验失败。
@@ -236,6 +234,3 @@ func (v *Validator) validateTSCode(code, kind string, stage ValidationStage) *Va
 		Message: msg,
 	}
 }
-
-// 反向兜底:如果未来 chunk 包希望调用 edit 层的校验,暴露一个显式类型断言
-var _ = chunk.Chunk{} // 保留 import

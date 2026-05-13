@@ -62,7 +62,7 @@ func buildGoFuncChunk(fn *ast.FuncDecl, fset *token.FileSet, relPath string, con
 		}
 	}
 
-	// 取声明起点时,优先使用 Doc 注释的起点,这样摘要和完整体都会带上文档注释
+	// 取声明起点时,优先使用 Doc 注释的起点,这样 body 完整包括文档注释
 	startPos := fn.Pos()
 	if fn.Doc != nil {
 		startPos = fn.Doc.Pos()
@@ -71,34 +71,16 @@ func buildGoFuncChunk(fn *ast.FuncDecl, fset *token.FileSet, relPath string, con
 	end := fset.Position(fn.End()).Offset
 	body := string(content[start:end])
 
-	skeleton := goFuncSkeleton(fn, fset, content, start)
-
 	return &Chunk{
-		FilePath:    relPath,
-		Kind:        kind,
-		Name:        name,
-		Skeleton:    skeleton,
-		Body:        body,
-		Defines:     []string{name},
-		Refs:        extractGoRefs(fn.Body),
-		ContentHash: HashBody(body),
+		FilePath: relPath,
+		Kind:     kind,
+		Name:     name,
+		Body:     body,
+		Refs:     extractGoRefs(fn.Body),
 	}
-}
-
-// goFuncSkeleton 生成函数骨架:保留签名原文(含注释、泛型、多行参数列表),
-// 函数体替换为 "{ /* ... */ }"。接口方法等无 Body 的保留全文。
-func goFuncSkeleton(fn *ast.FuncDecl, fset *token.FileSet, content []byte, declStart int) string {
-	if fn.Body == nil {
-		// 接口方法、外部链接函数(asm)
-		end := fset.Position(fn.End()).Offset
-		return string(content[declStart:end])
-	}
-	sigEnd := fset.Position(fn.Body.Lbrace).Offset
-	return string(content[declStart:sigEnd]) + "{ /* ... */ }"
 }
 
 // buildGoTypeChunk 构造 type 声明的 Chunk。
-// 注意:type 没有"骨架/主体"之分,Skeleton 等于 Body。
 func buildGoTypeChunk(decl *ast.GenDecl, ts *ast.TypeSpec, fset *token.FileSet, relPath string, content []byte) *Chunk {
 	name := ts.Name.Name
 	kind := KindType
@@ -130,14 +112,11 @@ func buildGoTypeChunk(decl *ast.GenDecl, ts *ast.TypeSpec, fset *token.FileSet, 
 	}
 
 	return &Chunk{
-		FilePath:    relPath,
-		Kind:        kind,
-		Name:        name,
-		Skeleton:    body, // type 无需抽骨架
-		Body:        body,
-		Defines:     []string{name},
-		Refs:        extractGoRefs(ts.Type),
-		ContentHash: HashBody(body),
+		FilePath: relPath,
+		Kind:     kind,
+		Name:     name,
+		Body:     body,
+		Refs:     extractGoRefs(ts.Type),
 	}
 }
 
