@@ -405,9 +405,6 @@ func TestHarness_AsLLMTools_IsIdempotent(t *testing.T) {
 	h, _ := setupHarness(t, nil, Config{})
 	first := h.AsLLMTools(fakeBuilder{})
 	second := h.AsLLMTools(fakeBuilder{})
-	if &first[0] != &first[0] {
-		t.Fatal("sanity")
-	}
 	// 对象身份(容量/指针)相同
 	if len(first) != len(second) {
 		t.Errorf("length differs")
